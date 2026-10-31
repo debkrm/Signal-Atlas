@@ -1,0 +1,180 @@
+{
+  "verified_events": [
+    {
+      "event_id": "TATASTEEL_SPLIT_2022",
+      "company": "Tata Steel Limited",
+      "symbol": "TATASTEEL",
+      "ex_date": "2022-07-28",
+      "actions_provenance": {
+        "filename": "corporate_actions_TATASTEEL_01-01-2022_31-12-2022.json",
+        "sha256": "9bfb6310c443faa8b0cd43465dea489acf35a14564a3b40d830507e7ca3db34e",
+        "record_count": 2,
+        "raw_records": [
+          {
+            "bcEndDate": "28-Jun-2022",
+            "bcStartDate": "17-Jun-2022",
+            "caBroadcastDate": null,
+            "comp": "Tata Steel Limited",
+            "exDate": "15-Jun-2022",
+            "faceVal": "1",
+            "ind": "-",
+            "isin": "INE081A01012",
+            "ndEndDate": "-",
+            "ndStartDate": "-",
+            "recDate": "-",
+            "series": "EQ",
+            "subject": "Annual General Meeting/Dividend - Rs  51 Per Share",
+            "symbol": "TATASTEEL"
+          },
+          {
+            "bcEndDate": "-",
+            "bcStartDate": "-",
+            "caBroadcastDate": null,
+            "comp": "Tata Steel Limited",
+            "exDate": "28-Jul-2022",
+            "faceVal": "1",
+            "ind": "-",
+            "isin": "INE081A01012",
+            "ndEndDate": "-",
+            "ndStartDate": "-",
+            "recDate": "29-Jul-2022",
+            "series": "EQ",
+            "subject": "Face Value Split (Sub-Division) - From Rs 10/- Per Share To Re 1/- Per Share",
+            "symbol": "TATASTEEL"
+          }
+        ]
+      },
+      "discontinuity_evidence": {
+        "symbol": "TATASTEEL",
+        "pre_split": {
+          "date": "2022-07-27",
+          "open": 951.0,
+          "high": 961.55,
+          "low": 943.6,
+          "close": 959.4,
+          "prev_close": 949.5,
+          "volume": 5255902,
+          "isin": "INE081A01012"
+        },
+        "post_split": {
+          "date": "2022-07-28",
+          "open": 98.1,
+          "high": 102.0,
+          "low": 97.15,
+          "close": 100.35,
+          "prev_close": 959.4,
+          "volume": 137156107,
+          "isin": "INE081A01012"
+        },
+        "close_price_ratio": 0.1046,
+        "raw_drop_percent": 89.54,
+        "volume_multiplier": 26.1,
+        "raw_prevclose_retained": true
+      }
+    },
+    {
+      "event_id": "HAL_SPLIT_2023",
+      "company": "Hindustan Aeronautics Limited",
+      "symbol": "HAL",
+      "ex_date": "2023-09-28",
+      "actions_provenance": {
+        "filename": "corporate_actions_HAL_01-01-2023_31-12-2023.json",
+        "sha256": "65af4c5a841c05250125a84140140ccb932b43fff6906b983953342f26163eb3",
+        "record_count": 4,
+        "raw_records": [
+          {
+            "bcEndDate": "-",
+            "bcStartDate": "-",
+            "caBroadcastDate": null,
+            "comp": "Hindustan Aeronautics Limited",
+            "exDate": "20-Mar-2023",
+            "faceVal": "5",
+            "ind": "-",
+            "isin": "INE066F01012",
+            "ndEndDate": "-",
+            "ndStartDate": "-",
+            "recDate": "20-Mar-2023",
+            "series": "EQ",
+            "subject": "Interim Dividend - Rs 20 Per Share",
+            "symbol": "HAL"
+          },
+          {
+            "bcEndDate": "31-Aug-2023",
+            "bcStartDate": "25-Aug-2023",
+            "caBroadcastDate": null,
+            "comp": "Hindustan Aeronautics Limited",
+            "exDate": "24-Aug-2023",
+            "faceVal": "5",
+            "ind": "-",
+            "isin": "INE066F01012",
+            "ndEndDate": "-",
+            "ndStartDate": "-",
+            "recDate": "-",
+            "series": "EQ",
+            "subject": "Annual General Meeting",
+            "symbol": "HAL"
+          },
+          {
+            "bcEndDate": "-",
+            "bcStartDate": "-",
+            "caBroadcastDate": null,
+            "comp": "Hindustan Aeronautics Limited",
+            "exDate": "24-Aug-2023",
+            "faceVal": "5",
+            "ind": "-",
+            "isin": "INE066F01012",
+            "ndEndDate": "-",
+            "ndStartDate": "-",
+            "recDate": "24-Aug-2023",
+            "series": "EQ",
+            "subject": "Dividend - Rs 15 Per Share",
+            "symbol": "HAL"
+          },
+          {
+            "bcEndDate": "-",
+            "bcStartDate": "-",
+            "caBroadcastDate": null,
+            "comp": "Hindustan Aeronautics Limited",
+            "exDate": "28-Sep-2023",
+            "faceVal": "5",
+            "ind": "-",
+            "isin": "INE066F01012",
+            "ndEndDate": "-",
+            "ndStartDate": "-",
+            "recDate": "29-Sep-2023",
+            "series": "EQ",
+            "subject": "Face Value Split (Sub-Division) - From Rs 10/- Per Share To Rs 5/- Per Share",
+            "symbol": "HAL"
+          }
+        ]
+      },
+      "discontinuity_evidence": {
+        "symbol": "HAL",
+        "pre_split": {
+          "date": "2023-09-27",
+          "open": 3874.0,
+          "high": 3883.65,
+          "low": 3832.0,
+          "close": 3837.7,
+          "prev_close": 3871.15,
+          "volume": 853470,
+          "isin": "INE066F01012"
+        },
+        "post_split": {
+          "date": "2023-09-28",
+          "open": 1934.8,
+          "high": 1941.6,
+          "low": 1885.0,
+          "close": 1889.15,
+          "prev_close": 3837.7,
+          "volume": 1992076,
+          "isin": "INE066F01020"
+        },
+        "close_price_ratio": 0.4923,
+        "raw_drop_percent": 50.77,
+        "volume_multiplier": 2.33,
+        "raw_prevclose_retained": true
+      }
+    }
+  ]
+}

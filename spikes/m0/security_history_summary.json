@@ -1,0 +1,266 @@
+{
+  "targets": [
+    {
+      "symbol": "DHFL",
+      "isin": "INE202B01012",
+      "company_name": "Dewan Housing Finance Corporation Limited",
+      "observations": [
+        {
+          "date": "2019-01-10",
+          "archive_file": "cm10JAN2019bhav.csv.zip",
+          "archive_sha256": "7bd56fcc2b1c259f34064b90de2cb422116eca37e80a8fd5714c6cf54102ab32",
+          "found": true,
+          "symbol_matches": 9,
+          "isin_matches": 1,
+          "series_list": [
+            "EQ",
+            "nan",
+            "NC",
+            "NL",
+            "NN",
+            "NP",
+            "NS",
+            "NX",
+            "NY"
+          ],
+          "records": [
+            {
+              "symbol": "DHFL",
+              "series": "EQ",
+              "isin": "INE202B01012",
+              "close": 224.1,
+              "volume": 4514692
+            },
+            {
+              "symbol": "DHFL",
+              "series": "nan",
+              "isin": "INE202B07HT4",
+              "close": 962.0,
+              "volume": 75
+            },
+            {
+              "symbol": "DHFL",
+              "series": "NC",
+              "isin": "INE202B07HV0",
+              "close": 930.0,
+              "volume": 330
+            },
+            {
+              "symbol": "DHFL",
+              "series": "NL",
+              "isin": "INE202B07IK1",
+              "close": 1007.99,
+              "volume": 170
+            },
+            {
+              "symbol": "DHFL",
+              "series": "NN",
+              "isin": "INE202B07IM7",
+              "close": 935.0,
+              "volume": 15
+            },
+            {
+              "symbol": "DHFL",
+              "series": "NP",
+              "isin": "INE202B07IO3",
+              "close": 927.76,
+              "volume": 617
+            },
+            {
+              "symbol": "DHFL",
+              "series": "NS",
+              "isin": "INE202B07JA0",
+              "close": 920.0,
+              "volume": 42
+            },
+            {
+              "symbol": "DHFL",
+              "series": "NX",
+              "isin": "INE202B07JE2",
+              "close": 904.73,
+              "volume": 4140
+            },
+            {
+              "symbol": "DHFL",
+              "series": "NY",
+              "isin": "INE202B07JF9",
+              "close": 950.0,
+              "volume": 27
+            }
+          ]
+        },
+        {
+          "date": "2020-01-10",
+          "archive_file": "cm10JAN2020bhav.csv.zip",
+          "archive_sha256": "89a048a0ce3b9242b58bc6aa2757972715104731747ea540a33c7daee8611e4a",
+          "found": true,
+          "symbol_matches": 9,
+          "isin_matches": 1,
+          "series_list": [
+            "EQ",
+            "N4",
+            "N6",
+            "NC",
+            "NP",
+            "NQ",
+            "NS",
+            "NY",
+            "Y1"
+          ],
+          "records": [
+            {
+              "symbol": "DHFL",
+              "series": "EQ",
+              "isin": "INE202B01012",
+              "close": 17.05,
+              "volume": 2223392
+            },
+            {
+              "symbol": "DHFL",
+              "series": "N4",
+              "isin": "INE202B07HN7",
+              "close": 230.0,
+              "volume": 35
+            },
+            {
+              "symbol": "DHFL",
+              "series": "N6",
+              "isin": "INE202B07HP2",
+              "close": 234.1,
+              "volume": 35
+            },
+            {
+              "symbol": "DHFL",
+              "series": "NC",
+              "isin": "INE202B07HV0",
+              "close": 227.0,
+              "volume": 50
+            },
+            {
+              "symbol": "DHFL",
+              "series": "NP",
+              "isin": "INE202B07IO3",
+              "close": 227.92,
+              "volume": 1499
+            },
+            {
+              "symbol": "DHFL",
+              "series": "NQ",
+              "isin": "INE202B07IY2",
+              "close": 236.0,
+              "volume": 156
+            },
+            {
+              "symbol": "DHFL",
+              "series": "NS",
+              "isin": "INE202B07JA0",
+              "close": 217.0,
+              "volume": 15
+            },
+            {
+              "symbol": "DHFL",
+              "series": "NY",
+              "isin": "INE202B07JF9",
+              "close": 245.0,
+              "volume": 44
+            },
+            {
+              "symbol": "DHFL",
+              "series": "Y1",
+              "isin": "INE202B07JH5",
+              "close": 195.0,
+              "volume": 3
+            }
+          ]
+        },
+        {
+          "date": "2022-07-28",
+          "archive_file": "cm28JUL2022bhav.csv.zip",
+          "archive_sha256": "6efdacccfe775d2b21201eeb0e4531c0355de4d81b7eccdc170415bfd0dc36fe",
+          "found": false,
+          "symbol_matches": 0,
+          "isin_matches": 0,
+          "series_list": [],
+          "records": []
+        },
+        {
+          "date": "2024-10-25",
+          "archive_file": "BhavCopy_NSE_CM_0_0_0_20241025_F_0000.csv.zip",
+          "archive_sha256": "1bffc104f8ab173eac972d0ef4a14dd609eb3e54138dac547817d8a6659b7e6c",
+          "found": false,
+          "symbol_matches": 0,
+          "isin_matches": 0,
+          "series_list": [],
+          "records": []
+        }
+      ]
+    },
+    {
+      "symbol": "JETAIRWAYS",
+      "isin": "INE802G01018",
+      "company_name": "Jet Airways (India) Limited",
+      "observations": [
+        {
+          "date": "2019-01-10",
+          "archive_file": "cm10JAN2019bhav.csv.zip",
+          "archive_sha256": "7bd56fcc2b1c259f34064b90de2cb422116eca37e80a8fd5714c6cf54102ab32",
+          "found": true,
+          "symbol_matches": 1,
+          "isin_matches": 1,
+          "series_list": [
+            "EQ"
+          ],
+          "records": [
+            {
+              "symbol": "JETAIRWAYS",
+              "series": "EQ",
+              "isin": "INE802G01018",
+              "close": 242.8,
+              "volume": 4422435
+            }
+          ]
+        },
+        {
+          "date": "2022-07-28",
+          "archive_file": "cm28JUL2022bhav.csv.zip",
+          "archive_sha256": "6efdacccfe775d2b21201eeb0e4531c0355de4d81b7eccdc170415bfd0dc36fe",
+          "found": true,
+          "symbol_matches": 1,
+          "isin_matches": 1,
+          "series_list": [
+            "BZ"
+          ],
+          "records": [
+            {
+              "symbol": "JETAIRWAYS",
+              "series": "BZ",
+              "isin": "INE802G01018",
+              "close": 102.55,
+              "volume": 45161
+            }
+          ]
+        },
+        {
+          "date": "2024-10-25",
+          "archive_file": "BhavCopy_NSE_CM_0_0_0_20241025_F_0000.csv.zip",
+          "archive_sha256": "1bffc104f8ab173eac972d0ef4a14dd609eb3e54138dac547817d8a6659b7e6c",
+          "found": true,
+          "symbol_matches": 1,
+          "isin_matches": 1,
+          "series_list": [
+            "BZ"
+          ],
+          "records": [
+            {
+              "symbol": "JETAIRWAYS",
+              "series": "BZ",
+              "isin": "INE802G01018",
+              "close": 34.98,
+              "volume": 41321
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

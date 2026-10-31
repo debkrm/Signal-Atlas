@@ -1,0 +1,804 @@
+import datetime
+from contextlib import contextmanager
+from decimal import Decimal
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple
+import uuid
+
+from sqlalchemy import delete, desc, func, select, text
+from sqlalchemy.orm import Session
+
+from signal_atlas.db.models.calendar import TradingCalendar
+from signal_atlas.db.models.instruments import Instrument, InstrumentSymbolHistory
+from signal_atlas.db.models.prices import DailyPriceRaw
+from signal_atlas.db.models.universe import UniverseMemberRecord, UniverseSnapshotRecord
+from signal_atlas.db.session import get_db
+from signal_atlas.quality.adjustment import AdjustedPriceRecord, get_point_in_time_adjusted_history
+from signal_atlas.quality.bulk_adjustment import get_quarantined_unresolved_instruments
+from signal_atlas.universe.provenance import RawDataManifest, compute_raw_data_manifest
+from signal_atlas.universe.models import (
+    EligibilityReason,
+    UniverseConfig,
+    UniverseMember,
+    UniverseSnapshot,
+)
+from signal_atlas.universe.policy import evaluate_instrument_eligibility
+
+
+class PointInTimeUniverseService:
+    """
+    Deterministic Point-in-Time Liquidity Universe Service for NSE cash equities.
+    Evaluates securities strictly based on information available on or before as_of_date.
+    Zero future leakage, zero survivorship bias.
+    """
+
+    def __init__(self, db: Optional[Session] = None):
+        self._external_db = db
+
+    @staticmethod
+    def _bind_manifest(
+        config: UniverseConfig,
+        raw_manifest: RawDataManifest,
+    ) -> UniverseConfig:
+        """Bind a verified current raw-data identity before deriving cache identity."""
+        supplied_hash = config.raw_data_manifest_hash
+        if supplied_hash and supplied_hash != raw_manifest.manifest_fingerprint:
+            raise ValueError(
+                "Supplied raw_data_manifest_hash does not match the current raw-data manifest."
+            )
+        return config.model_copy(
+            update={
+                "raw_data_manifest_hash": raw_manifest.manifest_fingerprint,
+                "raw_data_version": f"RAW-MANIFEST-{raw_manifest.manifest_fingerprint[:16]}",
+            }
+        )
+
+    @staticmethod
+    @contextmanager
+    def _consistent_snapshot_transaction(db: Session):
+        """Use one repeatable database snapshot for manifest, lookup, and build.
+
+        PostgreSQL sessions supplied by callers must either already be in a
+        REPEATABLE READ transaction or be unused so this method can establish
+        one. Caller-owned transactions are never committed here.
+        """
+        if db.get_bind().dialect.name == "postgresql":
+            if db.in_transaction():
+                isolation_level = db.connection().get_isolation_level().upper().replace("_", " ")
+                if isolation_level != "REPEATABLE READ":
+                    raise RuntimeError(
+                        "Universe construction requires a PostgreSQL REPEATABLE READ transaction; "
+                        "the supplied session already has an incompatible active transaction."
+                    )
+            else:
+                connection = db.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+                isolation_level = connection.get_isolation_level().upper().replace("_", " ")
+                if isolation_level != "REPEATABLE READ":
+                    raise RuntimeError(
+                        "Universe construction could not establish PostgreSQL REPEATABLE READ isolation."
+                    )
+        yield db
+
+    def get_completed_trading_sessions(
+        self,
+        as_of_date: datetime.date,
+        lookback_sessions: int,
+        session: Session,
+        enforce_full_lookback: bool = True,
+    ) -> List[datetime.date]:
+        """
+        Retrieves the exact trailing N completed market trading sessions
+        from the trading calendar up to and including as_of_date.
+        Excludes weekends and declared exchange holidays.
+        """
+        query = (
+            select(TradingCalendar.trade_date)
+            .where(
+                TradingCalendar.is_trading_day == True,
+                TradingCalendar.trade_date <= as_of_date,
+            )
+            .order_by(TradingCalendar.trade_date.desc())
+            .limit(lookback_sessions)
+        )
+        dates = session.execute(query).scalars().all()
+        sorted_dates = sorted(dates)
+        if enforce_full_lookback and len(sorted_dates) < lookback_sessions:
+            raise ValueError(
+                f"Insufficient completed trading sessions on or before {as_of_date}: "
+                f"found {len(sorted_dates)}, required {lookback_sessions}."
+            )
+        return sorted_dates
+
+    def build_universe(
+        self,
+        as_of_date: datetime.date,
+        config: Optional[UniverseConfig] = None,
+        persist: bool = True,
+        session: Optional[Session] = None,
+    ) -> UniverseSnapshot:
+        """
+        Computes the complete, deterministic Point-in-Time Universe for as_of_date.
+        """
+        cfg = config or UniverseConfig()
+        active_session = session if session is not None else self._external_db
+        db_cm = get_db(active_session)
+
+        with db_cm as db:
+            with self._consistent_snapshot_transaction(db):
+                raw_manifest = compute_raw_data_manifest(db)
+                return self._build_universe(
+                    as_of_date,
+                    config=cfg,
+                    persist=persist,
+                    session=db,
+                    raw_manifest=raw_manifest,
+                )
+
+    def _build_universe(
+        self,
+        as_of_date: datetime.date,
+        config: UniverseConfig,
+        persist: bool,
+        session: Session,
+        raw_manifest: RawDataManifest,
+    ) -> UniverseSnapshot:
+        """Build from a manifest verified in the caller's consistent transaction."""
+        cfg = self._bind_manifest(config, raw_manifest)
+        db = session
+
+        # 0. Validate as_of_date against coverage bounds and trading calendar
+        if as_of_date > cfg.data_coverage_end:
+            raise ValueError(
+                f"Requested as_of_date {as_of_date} exceeds data coverage boundary {cfg.data_coverage_end}."
+            )
+        if as_of_date < cfg.data_coverage_start:
+            raise ValueError(
+                f"Requested as_of_date {as_of_date} is prior to data coverage start {cfg.data_coverage_start}."
+            )
+
+        cal_max = db.execute(select(func.max(TradingCalendar.trade_date))).scalar()
+        if cal_max is not None and as_of_date > cal_max:
+            raise ValueError(
+                f"Requested as_of_date {as_of_date} is beyond available trading calendar end {cal_max}."
+            )
+
+        # 1. Determine exact trading session window
+        sessions = self.get_completed_trading_sessions(
+            as_of_date,
+            cfg.lookback_sessions,
+            db,
+            enforce_full_lookback=not cfg.allow_partial_lookback,
+        )
+        if not sessions:
+            raise ValueError(f"No completed trading sessions found on or before {as_of_date}")
+
+        actual_lookback_count = len(sessions)
+        if not cfg.allow_partial_lookback and actual_lookback_count != cfg.lookback_sessions:
+            raise ValueError(
+                f"Incomplete lookback window for {as_of_date}: found {actual_lookback_count} sessions, "
+                f"exactly {cfg.lookback_sessions} required (partial lookback not allowed)."
+            )
+        start_date = sessions[0]
+        end_date = sessions[-1]
+
+        # 2. Identify quarantined instruments
+        quarantined = get_quarantined_unresolved_instruments(db)
+        quarantined_ids = set(quarantined.keys())
+
+        # 3. Resolve Point-in-Time Symbol and ISIN for all instruments
+        # An instrument's symbol/ISIN as of as_of_date is resolved through instrument_symbol_history
+        sym_sql = text("""
+            SELECT
+                instrument_id, symbol, isin, series, valid_from, valid_to
+            FROM instrument_symbol_history
+            WHERE valid_from <= :as_of_date
+              AND (valid_to IS NULL OR valid_to >= :as_of_date)
+            ORDER BY instrument_id, valid_from DESC
+        """)
+        sym_rows = db.execute(sym_sql, {"as_of_date": as_of_date}).mappings().all()
+        sym_by_inst: Dict[str, List[Dict[str, Any]]] = {}
+        for r in sym_rows:
+            sym_by_inst.setdefault(r["instrument_id"], []).append(dict(r))
+
+        # Also load instrument master metadata (listing_date, first_observed_trade_date, delisting_date)
+        inst_sql = text("""
+            SELECT instrument_id, listing_date, first_observed_trade_date, delisting_date, status
+            FROM instruments
+        """)
+        inst_rows = db.execute(inst_sql).mappings().all()
+        inst_meta: Dict[str, Dict[str, Any]] = {
+            r["instrument_id"]: dict(r) for r in inst_rows
+        }
+
+        # 4. Aggregate Trailing Traded Value and Observation Counts in Lookback Window
+        # Permitted series check in the raw trade data query
+        series_list = list(cfg.permitted_series)
+        if cfg.include_sme and "SM" not in series_list:
+            series_list.append("SM")
+
+        agg_sql = text("""
+            WITH stats AS (
+                SELECT
+                    instrument_id,
+                    count(DISTINCT trade_date) as observed_sessions,
+                    sum(traded_value) as total_turnover,
+                    count(traded_value) as valid_turnover_sessions,
+                    count(*) FILTER (WHERE traded_value IS NULL) as null_turnover_count,
+                    count(*) FILTER (WHERE traded_value = 0) as zero_turnover_count,
+                    count(*) FILTER (WHERE traded_value > 0) as positive_turnover_count,
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY traded_value) as median_turnover
+                FROM daily_prices_raw
+                WHERE trade_date >= :start_date AND trade_date <= :end_date
+                  AND series = ANY(:series_list)
+                GROUP BY instrument_id
+            ),
+            latest_prices AS (
+                SELECT DISTINCT ON (instrument_id)
+                    instrument_id,
+                    close as latest_raw_close,
+                    trade_date as latest_observed_date,
+                    series as latest_series
+                FROM daily_prices_raw
+                WHERE trade_date >= :start_date AND trade_date <= :end_date
+                  AND series = ANY(:series_list)
+                ORDER BY instrument_id, trade_date DESC
+            )
+            SELECT
+                s.*,
+                lp.latest_raw_close,
+                lp.latest_observed_date,
+                lp.latest_series
+            FROM stats s
+            JOIN latest_prices lp ON s.instrument_id = lp.instrument_id
+        """)
+        trade_rows = db.execute(
+            agg_sql,
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "series_list": series_list,
+            },
+        ).mappings().all()
+
+        trade_stats: Dict[str, Dict[str, Any]] = {
+            r["instrument_id"]: dict(r) for r in trade_rows
+        }
+
+        # Query trade evidence per series in the lookback window up to as_of_date
+        series_trades_sql = text("""
+            SELECT
+                instrument_id,
+                series,
+                max(trade_date) as latest_trade_date
+            FROM daily_prices_raw
+            WHERE trade_date >= :start_date AND trade_date <= :end_date
+              AND series = ANY(:series_list)
+            GROUP BY instrument_id, series
+        """)
+        st_rows = db.execute(
+            series_trades_sql,
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "series_list": series_list,
+            },
+        ).mappings().all()
+
+        series_latest_trade: Dict[Tuple[str, str], datetime.date] = {
+            (r["instrument_id"], r["series"]): r["latest_trade_date"]
+            for r in st_rows
+        }
+
+        # Resolve PIT identity deterministically backed by contemporaneous trade evidence
+        # within record validity interval or source-backed interval evidence (valid_from DESC)
+        pit_symbols: Dict[str, Dict[str, Any]] = {}
+        ambiguous_instruments: Set[str] = set()
+
+        for iid, records in sym_by_inst.items():
+            if len(records) == 1:
+                pit_symbols[iid] = records[0]
+            else:
+                # Multiple valid records exist on as_of_date (e.g. overlapping EQ and BE intervals).
+                max_vf = max(r["valid_from"] for r in records)
+
+                # Contemporaneous trade evidence must fall within the record's own validity interval
+                # and must not be strictly older than the newest transition boundary (max_vf).
+                candidates_with_trade = []
+                for rec in records:
+                    s = rec["series"]
+                    latest_td = series_latest_trade.get((iid, s))
+                    vt = rec["valid_to"]
+                    eff_end = min(as_of_date, vt) if vt is not None else as_of_date
+                    if (
+                        latest_td is not None
+                        and rec["valid_from"] <= latest_td <= eff_end
+                        and latest_td >= max_vf
+                    ):
+                        candidates_with_trade.append((rec, latest_td))
+
+                chosen = None
+                if candidates_with_trade:
+                    # Sort by latest_trade_date desc, then valid_from desc
+                    candidates_with_trade.sort(key=lambda x: (x[1], x[0]["valid_from"]), reverse=True)
+                    top_td = candidates_with_trade[0][1]
+                    top_tied = [c for c in candidates_with_trade if c[1] == top_td]
+                    if len(top_tied) == 1:
+                        chosen = top_tied[0][0]
+                    else:
+                        # Conflicting records traded on the exact same latest date in different series
+                        ambiguous_instruments.add(iid)
+                        chosen = top_tied[0][0]
+
+                if chosen is None:
+                    # No contemporaneous trade evidence on or after max_vf.
+                    # Fallback to source-backed historical interval evidence (latest valid_from).
+                    top_records = [r for r in records if r["valid_from"] == max_vf]
+                    if len(top_records) == 1:
+                        chosen = top_records[0]
+                    else:
+                        # Conflicting records with identical valid_from and no trade evidence
+                        ambiguous_instruments.add(iid)
+                        chosen = top_records[0]
+
+                pit_symbols[iid] = chosen
+
+        # 5. Evaluate All Available Instruments
+        evaluated_members: List[UniverseMember] = []
+        all_candidate_ids = set(pit_symbols.keys()) | set(trade_stats.keys())
+
+        for iid in sorted(all_candidate_ids):
+            sym_info = pit_symbols.get(iid)
+            t_info = trade_stats.get(iid)
+            meta = inst_meta.get(iid, {})
+
+            if sym_info:
+                symbol = sym_info["symbol"]
+                isin = sym_info["isin"]
+                series = sym_info["series"]
+            elif t_info:
+                symbol = t_info["latest_series"]
+                isin = ""
+                series = t_info["latest_series"]
+            else:
+                continue
+
+            listing_date = meta.get("listing_date")
+            first_observed_date = meta.get("first_observed_trade_date")
+            delisting_date = meta.get("delisting_date")
+
+            if t_info:
+                obs_count = t_info["observed_sessions"]
+                missing_count = max(0, actual_lookback_count - obs_count)
+                completeness = min(
+                    Decimal("1.0000"),
+                    (Decimal(obs_count) / Decimal(actual_lookback_count)).quantize(Decimal("0.0001"))
+                )
+                tot_turnover = (
+                    Decimal(str(t_info["total_turnover"]))
+                    if t_info["total_turnover"] is not None
+                    else None
+                )
+                valid_sessions = t_info["valid_turnover_sessions"]
+                turnover_completeness = min(
+                    Decimal("1.0000"),
+                    (Decimal(valid_sessions) / Decimal(actual_lookback_count)).quantize(Decimal("0.0001"))
+                )
+                # Average Daily Traded Value = total valid turnover / observed valid sessions
+                if tot_turnover is not None and valid_sessions > 0:
+                    adtv = (tot_turnover / Decimal(valid_sessions)).quantize(
+                        Decimal("0.01")
+                    )
+                else:
+                    adtv = None
+
+                median_turnover = (
+                    Decimal(str(t_info["median_turnover"])).quantize(Decimal("0.01"))
+                    if t_info["median_turnover"] is not None
+                    else None
+                )
+                null_cnt = t_info["null_turnover_count"]
+                zero_cnt = t_info["zero_turnover_count"]
+                pos_cnt = t_info["positive_turnover_count"]
+                latest_close = (
+                    Decimal(str(t_info["latest_raw_close"])).quantize(Decimal("0.01"))
+                    if t_info["latest_raw_close"] is not None
+                    else None
+                )
+            else:
+                obs_count = 0
+                missing_count = actual_lookback_count
+                completeness = Decimal("0.0000")
+                valid_sessions = 0
+                turnover_completeness = Decimal("0.0000")
+                tot_turnover = None
+                adtv = None
+                median_turnover = None
+                null_cnt = 0
+                zero_cnt = 0
+                pos_cnt = 0
+                latest_close = None
+
+            if iid in ambiguous_instruments:
+                is_elig = False
+                reason = EligibilityReason.EXCLUDED_AMBIGUOUS_SERIES_HISTORY
+                detail = "Multiple conflicting series records valid on as-of date cannot be resolved unambiguously"
+            else:
+                is_elig, reason, detail = evaluate_instrument_eligibility(
+                    instrument_id=iid,
+                    symbol=symbol,
+                    isin=isin,
+                    series=series,
+                    observed_sessions_count=obs_count,
+                    lookback_sessions=actual_lookback_count,
+                    average_daily_turnover=adtv,
+                    median_daily_turnover=median_turnover,
+                    latest_raw_close=latest_close,
+                    as_of_date=as_of_date,
+                    listing_date=listing_date,
+                    delisting_date=delisting_date,
+                    quarantined_instrument_ids=quarantined_ids,
+                    config=cfg,
+                    first_observed_trade_date=first_observed_date,
+                    valid_turnover_sessions_count=valid_sessions,
+                )
+
+            member = UniverseMember(
+                instrument_id=iid,
+                symbol=symbol,
+                isin=isin,
+                series=series,
+                observed_sessions_count=obs_count,
+                missing_sessions_count=missing_count,
+                trading_completeness=completeness,
+                expected_lookback_sessions=actual_lookback_count,
+                valid_turnover_sessions_count=valid_sessions,
+                turnover_data_completeness=turnover_completeness,
+                total_turnover=tot_turnover,
+                average_daily_turnover=adtv,
+                median_daily_turnover=median_turnover,
+                null_turnover_count=null_cnt,
+                zero_turnover_count=zero_cnt,
+                positive_turnover_count=pos_cnt,
+                latest_raw_close=latest_close,
+                is_eligible=is_elig,
+                exclusion_reason=reason if not is_elig else None,
+                exclusion_detail=detail if not is_elig else None,
+            )
+            evaluated_members.append(member)
+
+        # 6. Rank Eligible Members by ADTV (Descending) & Apply Optional Top-N Cutoff
+        eligible_candidates = [m for m in evaluated_members if m.is_eligible]
+        excluded_candidates = [m for m in evaluated_members if not m.is_eligible]
+
+        # Sort eligible candidates deterministically by ADTV desc, then symbol asc for equal ADTV
+        eligible_candidates.sort(
+            key=lambda m: (-(m.average_daily_turnover or Decimal("0")), m.symbol),
+        )
+
+        final_eligible: List[UniverseMember] = []
+        for rank_idx, m in enumerate(eligible_candidates, start=1):
+            if cfg.top_n is not None and rank_idx > cfg.top_n:
+                m.is_eligible = False
+                m.exclusion_reason = EligibilityReason.EXCLUDED_RANK_CUTOFF
+                m.exclusion_detail = f"Rank {rank_idx} exceeds top_n cap of {cfg.top_n}"
+                m.rank = None
+                excluded_candidates.append(m)
+            else:
+                m.rank = rank_idx
+                final_eligible.append(m)
+
+        # Deterministic snapshot ID based on date and canonical config hash
+        snap_id = f"SNAP-{as_of_date.isoformat()}-{cfg.config_hash}"
+
+        snapshot = UniverseSnapshot(
+            snapshot_id=snap_id,
+            as_of_date=as_of_date,
+            lookback_sessions=actual_lookback_count,
+            lookback_start_date=start_date,
+            lookback_end_date=end_date,
+            config=cfg,
+            config_identifier=cfg.config_identifier,
+            adjustment_version=cfg.adjustment_version,
+            raw_data_version=cfg.raw_data_version,
+            raw_data_manifest_hash=raw_manifest.manifest_fingerprint,
+            raw_data_manifest=raw_manifest.canonical_dict(),
+            data_coverage_start=cfg.data_coverage_start,
+            data_coverage_end=cfg.data_coverage_end,
+            code_revision=cfg.code_revision,
+            total_instruments_evaluated=len(evaluated_members),
+            eligible_count=len(final_eligible),
+            excluded_count=len(excluded_candidates),
+            eligible_members=final_eligible,
+            excluded_members=excluded_candidates,
+        )
+
+        # 7. Persist Snapshot to Database if requested
+        if persist:
+            self._persist_snapshot_record(snapshot, db)
+
+        return snapshot
+
+    def _persist_snapshot_record(self, snapshot: UniverseSnapshot, session: Session) -> None:
+        """
+        Stores snapshot and member records in PostgreSQL with transactional idempotency.
+        Enforces immutable coexistence across distinct configurations and raw data versions.
+        Does not delete existing snapshots.
+        """
+        existing = session.execute(
+            select(UniverseSnapshotRecord).where(
+                UniverseSnapshotRecord.as_of_date == snapshot.as_of_date,
+                UniverseSnapshotRecord.config_identifier == snapshot.config_identifier,
+                UniverseSnapshotRecord.adjustment_version == snapshot.adjustment_version,
+            )
+        ).scalars().first()
+
+        if existing is not None:
+            # Identical calculation inputs snapshot already exists; return idempotently
+            return
+
+        cfg = snapshot.config
+        snap_rec = UniverseSnapshotRecord(
+            snapshot_id=snapshot.snapshot_id,
+            as_of_date=snapshot.as_of_date,
+            config_version=cfg.config_version,
+            config_identifier=snapshot.config_identifier,
+            lookback_sessions=snapshot.lookback_sessions,
+            lookback_start_date=snapshot.lookback_start_date,
+            lookback_end_date=snapshot.lookback_end_date,
+            min_adtv=cfg.min_adtv,
+            min_trading_completeness=cfg.min_trading_completeness,
+            min_price=cfg.min_price,
+            permitted_series=",".join(cfg.permitted_series),
+            adjustment_version=snapshot.adjustment_version,
+            raw_data_version=snapshot.raw_data_version,
+            raw_data_manifest_hash=snapshot.raw_data_manifest_hash,
+            data_coverage_start=snapshot.data_coverage_start,
+            data_coverage_end=snapshot.data_coverage_end,
+            code_revision=snapshot.code_revision,
+            total_instruments_evaluated=snapshot.total_instruments_evaluated,
+            eligible_count=snapshot.eligible_count,
+            excluded_count=snapshot.excluded_count,
+        )
+        session.add(snap_rec)
+
+        all_members = snapshot.eligible_members + snapshot.excluded_members
+        member_records = [
+            UniverseMemberRecord(
+                snapshot_id=snapshot.snapshot_id,
+                instrument_id=m.instrument_id,
+                symbol=m.symbol,
+                isin=m.isin,
+                series=m.series,
+                observed_sessions_count=m.observed_sessions_count,
+                missing_sessions_count=m.missing_sessions_count,
+                trading_completeness=m.trading_completeness,
+                expected_lookback_sessions=m.expected_lookback_sessions,
+                valid_turnover_sessions_count=m.valid_turnover_sessions_count,
+                turnover_data_completeness=m.turnover_data_completeness,
+                total_turnover=m.total_turnover,
+                average_daily_turnover=m.average_daily_turnover,
+                median_daily_turnover=m.median_daily_turnover,
+                null_turnover_count=m.null_turnover_count,
+                zero_turnover_count=m.zero_turnover_count,
+                positive_turnover_count=m.positive_turnover_count,
+                latest_raw_close=m.latest_raw_close,
+                is_eligible=m.is_eligible,
+                rank=m.rank,
+                exclusion_reason=m.exclusion_reason.value if m.exclusion_reason else None,
+                exclusion_detail=m.exclusion_detail,
+            )
+            for m in all_members
+        ]
+        session.add_all(member_records)
+        session.flush()
+
+    def get_universe(
+        self,
+        as_of_date: datetime.date,
+        config: Optional[UniverseConfig] = None,
+        session: Optional[Session] = None,
+    ) -> UniverseSnapshot:
+        """
+        Loads an existing universe snapshot from PostgreSQL if present,
+        or dynamically computes and persists it.
+        """
+        cfg = config or UniverseConfig()
+        active_session = session if session is not None else self._external_db
+        db_cm = get_db(active_session)
+
+        with db_cm as db, self._consistent_snapshot_transaction(db):
+            raw_manifest = compute_raw_data_manifest(db)
+            cfg = self._bind_manifest(cfg, raw_manifest)
+            snap_rec = db.execute(
+                select(UniverseSnapshotRecord).where(
+                    UniverseSnapshotRecord.as_of_date == as_of_date,
+                    UniverseSnapshotRecord.config_identifier == cfg.config_identifier,
+                    UniverseSnapshotRecord.adjustment_version == cfg.adjustment_version,
+                    UniverseSnapshotRecord.raw_data_version == cfg.raw_data_version,
+                    UniverseSnapshotRecord.raw_data_manifest_hash == raw_manifest.manifest_fingerprint,
+                    UniverseSnapshotRecord.code_revision == cfg.code_revision,
+                )
+            ).scalars().first()
+
+            if snap_rec is not None:
+                members_recs = db.execute(
+                    select(UniverseMemberRecord)
+                    .where(UniverseMemberRecord.snapshot_id == snap_rec.snapshot_id)
+                    .order_by(UniverseMemberRecord.rank.nullslast(), UniverseMemberRecord.symbol)
+                ).scalars().all()
+                eligible_members = []
+                excluded_members = []
+                for mr in members_recs:
+                    member = UniverseMember(
+                        instrument_id=mr.instrument_id, symbol=mr.symbol, isin=mr.isin, series=mr.series,
+                        observed_sessions_count=mr.observed_sessions_count,
+                        missing_sessions_count=mr.missing_sessions_count,
+                        trading_completeness=Decimal(str(mr.trading_completeness)),
+                        expected_lookback_sessions=mr.expected_lookback_sessions,
+                        valid_turnover_sessions_count=mr.valid_turnover_sessions_count,
+                        turnover_data_completeness=Decimal(str(mr.turnover_data_completeness)),
+                        total_turnover=Decimal(str(mr.total_turnover)) if mr.total_turnover is not None else None,
+                        average_daily_turnover=Decimal(str(mr.average_daily_turnover)) if mr.average_daily_turnover is not None else None,
+                        median_daily_turnover=Decimal(str(mr.median_daily_turnover)) if mr.median_daily_turnover is not None else None,
+                        null_turnover_count=mr.null_turnover_count, zero_turnover_count=mr.zero_turnover_count,
+                        positive_turnover_count=mr.positive_turnover_count,
+                        latest_raw_close=Decimal(str(mr.latest_raw_close)) if mr.latest_raw_close is not None else None,
+                        is_eligible=mr.is_eligible, rank=mr.rank,
+                        exclusion_reason=EligibilityReason(mr.exclusion_reason) if mr.exclusion_reason else None,
+                        exclusion_detail=mr.exclusion_detail,
+                    )
+                    (eligible_members if mr.is_eligible else excluded_members).append(member)
+                return UniverseSnapshot(
+                    snapshot_id=snap_rec.snapshot_id, as_of_date=snap_rec.as_of_date,
+                    lookback_sessions=snap_rec.lookback_sessions,
+                    lookback_start_date=snap_rec.lookback_start_date,
+                    lookback_end_date=snap_rec.lookback_end_date, config=cfg,
+                    config_identifier=snap_rec.config_identifier,
+                    adjustment_version=snap_rec.adjustment_version,
+                    raw_data_version=snap_rec.raw_data_version,
+                    raw_data_manifest_hash=raw_manifest.manifest_fingerprint,
+                    raw_data_manifest=raw_manifest.canonical_dict(),
+                    data_coverage_start=snap_rec.data_coverage_start,
+                    data_coverage_end=snap_rec.data_coverage_end, code_revision=snap_rec.code_revision,
+                    total_instruments_evaluated=snap_rec.total_instruments_evaluated,
+                    eligible_count=snap_rec.eligible_count, excluded_count=snap_rec.excluded_count,
+                    eligible_members=eligible_members, excluded_members=excluded_members,
+                )
+
+            return self._build_universe(
+                as_of_date, config=cfg, persist=True, session=db, raw_manifest=raw_manifest
+            )
+
+    def get_universe_adjusted_prices(
+        self,
+        instrument_id: str,
+        as_of_date: datetime.date,
+        series: str = "EQ",
+        session: Optional[Session] = None,
+    ) -> List[AdjustedPriceRecord]:
+        """
+        Retrieves dynamically adjusted historical price records for an instrument
+        using candidate dataset version v1.4, strictly bounded by as_of_date.
+        Corporate actions with ex_date > as_of_date are strictly excluded.
+        """
+        db_cm = get_db(session or self._external_db)
+        with db_cm as db:
+            return get_point_in_time_adjusted_history(
+                instrument_id=instrument_id,
+                as_of_date=as_of_date,
+                series=series,
+                adjustment_version="v1.4",
+                db=db,
+            )
+
+    @staticmethod
+    def export_snapshot_checkpoint(
+        snapshot: UniverseSnapshot,
+        output_dir: Path = Path("data/checkpoints/universe"),
+    ) -> Tuple[Path, Path]:
+        """
+        Exports universe snapshot to JSON and CSV checkpoints for offline review and audit.
+        """
+        output_dir.mkdir(parents=True, exist_ok=True)
+        json_path = output_dir / f"universe_{snapshot.as_of_date.isoformat()}_{snapshot.config.config_identifier}.json"
+        csv_path = output_dir / f"universe_{snapshot.as_of_date.isoformat()}_{snapshot.config.config_identifier}.csv"
+
+        # 1. JSON Export
+        snapshot_dict = {
+            "snapshot_id": snapshot.snapshot_id,
+            "as_of_date": snapshot.as_of_date.isoformat(),
+            "lookback_sessions": snapshot.lookback_sessions,
+            "lookback_start_date": snapshot.lookback_start_date.isoformat(),
+            "lookback_end_date": snapshot.lookback_end_date.isoformat(),
+            "config_identifier": snapshot.config_identifier,
+            "adjustment_version": snapshot.adjustment_version,
+            "total_instruments_evaluated": snapshot.total_instruments_evaluated,
+            "eligible_count": snapshot.eligible_count,
+            "excluded_count": snapshot.excluded_count,
+            "eligible_members": [
+                {
+                    "rank": m.rank,
+                    "instrument_id": m.instrument_id,
+                    "symbol": m.symbol,
+                    "isin": m.isin,
+                    "series": m.series,
+                    "average_daily_turnover": float(m.average_daily_turnover) if m.average_daily_turnover else None,
+                    "median_daily_turnover": float(m.median_daily_turnover) if m.median_daily_turnover else None,
+                    "observed_sessions_count": m.observed_sessions_count,
+                    "trading_completeness": float(m.trading_completeness),
+                    "latest_raw_close": float(m.latest_raw_close) if m.latest_raw_close else None,
+                }
+                for m in snapshot.eligible_members
+            ],
+            "sample_excluded_members": [
+                {
+                    "instrument_id": m.instrument_id,
+                    "symbol": m.symbol,
+                    "isin": m.isin,
+                    "series": m.series,
+                    "exclusion_reason": m.exclusion_reason.value if m.exclusion_reason else None,
+                    "exclusion_detail": m.exclusion_detail,
+                    "average_daily_turnover": float(m.average_daily_turnover) if m.average_daily_turnover else None,
+                    "observed_sessions_count": m.observed_sessions_count,
+                }
+                for m in snapshot.excluded_members[:50]
+            ],
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(snapshot_dict, f, indent=2)
+
+        # 2. CSV Export of Eligible Members
+        import csv
+
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "rank",
+                "instrument_id",
+                "symbol",
+                "isin",
+                "series",
+                "average_daily_turnover",
+                "median_daily_turnover",
+                "observed_sessions",
+                "lookback_sessions",
+                "trading_completeness",
+                "latest_raw_close",
+                "null_turnover_count",
+                "zero_turnover_count",
+                "positive_turnover_count",
+            ])
+            for m in snapshot.eligible_members:
+                writer.writerow([
+                    m.rank,
+                    m.instrument_id,
+                    m.symbol,
+                    m.isin,
+                    m.series,
+                    f"{m.average_daily_turnover:.2f}" if m.average_daily_turnover else "",
+                    f"{m.median_daily_turnover:.2f}" if m.median_daily_turnover else "",
+                    m.observed_sessions_count,
+                    snapshot.lookback_sessions,
+                    f"{m.trading_completeness:.4f}",
+                    f"{m.latest_raw_close:.2f}" if m.latest_raw_close else "",
+                    m.null_turnover_count,
+                    m.zero_turnover_count,
+                    m.positive_turnover_count,
+                ])
+
+        return json_path, csv_path
+
+
+def get_point_in_time_universe(
+    as_of_date: datetime.date,
+    config: Optional[UniverseConfig] = None,
+    db: Optional[Session] = None,
+    persist: bool = True,
+) -> UniverseSnapshot:
+    """Convenience functional interface to PointInTimeUniverseService."""
+    service = PointInTimeUniverseService(db=db)
+    if persist:
+        return service.get_universe(as_of_date, config=config)
+    else:
+        return service.build_universe(as_of_date, config=config, persist=False)

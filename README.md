@@ -4,7 +4,7 @@ Signal Atlas is a quantitative research platform and point-in-time backtesting i
 
 ## Architectural Objectives
 
-1. **Zero Survivorship Bias**: Incorporates all historical listings, delistings, and surveillance segment transitions (`EQ` and `BE` series). Delisted instruments remain fully eligible on historical dates when active.
+1. **Controlled & Reduced Survivorship Bias**: Implements point-in-time universe construction across verified source coverage, retaining delisted instruments (e.g., historical inclusion of HDFC prior to delisting) and surveillance segment transitions (`EQ` and `BE` series) on dates when actively trading to systematically reduce survivorship bias within available exchange archives.
 2. **Zero Future-Data Leakage**: Strict point-in-time (PIT) information boundaries for universe construction, corporate action adjustments, and calendar lookbacks.
 3. **Audit-Grade Corporate Actions**: Explicit, decomposed corporate action modeling (stock splits, bonus issues, capital consolidations/reverse splits, and concurrent events) with verifiable regulatory circular provenance.
 4. **Deterministic Point-in-Time Liquidity Universe**: Trailing lookback evaluation based strictly on exchange-reported traded value (`traded_value`), preserving genuine zero vs. missing turnover semantics.
