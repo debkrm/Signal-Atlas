@@ -59,6 +59,7 @@ class RiskEngine:
         days_to_earnings: Optional[int] = None,
         pledge_pct: Optional[Decimal] = None,
         setup_id: Optional[str] = None,
+        ignore_regime: bool = False,
     ) -> TradeSetup:
         """
         Pure deterministic evaluation of a StrategyCandidate against RiskConfig and PortfolioState.
@@ -96,7 +97,11 @@ class RiskEngine:
         # -------------------------------------------------------------
         # 1. Strategy Signal Validity
         # -------------------------------------------------------------
-        if candidate.signal_state != SignalState.BUY or not candidate.is_valid:
+        # If the candidate was rejected solely due to macro regime, the technical setup is valid.
+        # The macro filter is owned exclusively by Gate 3 (Market Regime Gate).
+        if candidate.rejection_reason == "MARKET_REGIME_BEARISH":
+            _pass("STRATEGY_SIGNAL_VALID", "Strategy Signal Validity")
+        elif candidate.signal_state != SignalState.BUY or not candidate.is_valid:
             _fail(
                 "STRATEGY_SIGNAL_INVALID",
                 "Strategy Signal Validity",
@@ -131,17 +136,22 @@ class RiskEngine:
             _pass("VALID_PROFIT_TARGET", "Profit Target Geometry")
 
         # -------------------------------------------------------------
-        # 3. Market Regime Gate
+        # 3. Market Regime Gate (Single Owner of Macro Filter)
         # -------------------------------------------------------------
-        if self.config.require_bullish_market_regime:
+        if ignore_regime or not self.config.require_bullish_market_regime:
+            _pass("MARKET_REGIME_BYPASSED", "Market Regime Gate")
             if not market_context.is_market_regime_bullish:
-                _fail(
-                    "MARKET_REGIME_UNFAVORABLE",
-                    "Market Regime Gate",
-                    f"Benchmark ({market_context.benchmark_symbol}) regime is unfavorable for new long setups",
+                warnings.append(
+                    f"Market regime check bypassed via diagnostic flag (--ignore-regime); benchmark ({market_context.benchmark_symbol}) was unfavorable"
                 )
-            else:
-                _pass("MARKET_REGIME_BULLISH", "Market Regime Gate")
+        elif not market_context.is_market_regime_bullish:
+            _fail(
+                "MARKET_REGIME_UNFAVORABLE",
+                "Market Regime Gate",
+                f"Benchmark ({market_context.benchmark_symbol}) regime is unfavorable for new long setups",
+            )
+        else:
+            _pass("MARKET_REGIME_BULLISH", "Market Regime Gate")
 
         # -------------------------------------------------------------
         # 4. Portfolio Drawdown Kill-Switch
@@ -274,7 +284,7 @@ class RiskEngine:
                 else:
                     _pass("EARNINGS_CLEAR", "Corporate Earnings Gate")
             else:
-                warnings.append("Corporate earnings calendar is unavailable; non-blocking advisory")
+                warnings.append("Corporate earnings calendar is unavailable; manual check of results date required before live execution (event risk unmodeled)")
 
         # -------------------------------------------------------------
         # 11. Promoter Pledge Advisory Check
@@ -427,6 +437,7 @@ class RiskEngine:
             sizing_breakdown=sizing_breakdown,
             passed_checks=passed_checks,
             failed_checks=failed_checks,
+            condition_evaluations=candidate.features_summary.get("condition_evaluations", []),
             warnings=warnings,
             primary_rejection_reason=primary_reason,
             provenance={

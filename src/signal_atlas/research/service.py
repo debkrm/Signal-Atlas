@@ -187,6 +187,7 @@ class ResearchService:
         symbols: Optional[Sequence[str]] = None,
         min_reward_to_risk: Decimal = Decimal("1.50"),
         top_n: int = 15,
+        ignore_regime: bool = False,
         session: Optional[Session] = None,
     ) -> Dict[str, Any]:
         """
@@ -209,7 +210,7 @@ class ResearchService:
 
             # Market context
             mkt_status = self.get_market_status(target_date, session=db)
-            is_bullish = mkt_status["result"]["is_bullish"]
+            is_bullish = True if ignore_regime else mkt_status["result"]["is_bullish"]
             mkt_ctx = MarketContext(
                 as_of_date=target_date,
                 is_market_regime_bullish=is_bullish,
@@ -303,6 +304,7 @@ class ResearchService:
                     portfolio=portfolio,
                     market_context=mkt_ctx,
                     adtv=adtv,
+                    ignore_regime=ignore_regime,
                 )
 
                 if setup.is_approved:
@@ -331,6 +333,7 @@ class ResearchService:
         as_of_date: Optional[datetime.date] = None,
         portfolio: Optional[PortfolioState] = None,
         next_open: Optional[Decimal] = None,
+        ignore_regime: bool = False,
         session: Optional[Session] = None,
     ) -> Dict[str, Any]:
         """
@@ -357,15 +360,33 @@ class ResearchService:
             ).scalars().first()
 
             if not sym_rec:
+                # Query active symbols for suggestion (prioritize substring and prefix matches, then fuzzy)
+                all_active_syms = db.execute(
+                    select(InstrumentSymbolHistory.symbol)
+                    .where(
+                        InstrumentSymbolHistory.valid_from <= target_date,
+                        (InstrumentSymbolHistory.valid_to == None) | (InstrumentSymbolHistory.valid_to >= target_date),
+                    )
+                ).scalars().all()
+                import difflib
+                sub_matches = [s for s in all_active_syms if s.startswith(symbol.upper()) or symbol.upper() in s]
+                fuzzy_matches = difflib.get_close_matches(symbol.upper(), all_active_syms, n=4, cutoff=0.4)
+                combined = []
+                for m in sub_matches + fuzzy_matches:
+                    if m not in combined:
+                        combined.append(m)
+                matches = combined[:3]
+                suggestion_str = f" Did you mean: {', '.join(matches)}?" if matches else ""
+                err_msg = f"Symbol '{symbol}' not found in active instruments as of {target_date}.{suggestion_str}"
                 return {
                     "as_of": str(target_date),
                     "data_status": "NOT_AVAILABLE",
-                    "warnings": [f"Symbol '{symbol}' not found in active instruments as of {target_date}"],
+                    "warnings": [err_msg],
                     "result": {
                         "symbol": symbol,
                         "is_approved": False,
                         "signal_state": "AVOID",
-                        "primary_rejection_reason": f"Unknown symbol '{symbol}'",
+                        "primary_rejection_reason": err_msg,
                     },
                 }
 
@@ -396,7 +417,7 @@ class ResearchService:
 
             # Market context
             mkt_status = self.get_market_status(target_date, session=db)
-            is_bullish = mkt_status["result"]["is_bullish"]
+            is_bullish = True if ignore_regime else mkt_status["result"]["is_bullish"]
             mkt_ctx = MarketContext(
                 as_of_date=target_date,
                 is_market_regime_bullish=is_bullish,
@@ -426,6 +447,7 @@ class ResearchService:
                 isin=sym_rec.isin,
                 series=sym_rec.series,
                 next_open=next_open,
+                ignore_regime=ignore_regime,
             )
 
             return {

@@ -284,11 +284,32 @@ def market_status_command(
             console.print(f"[yellow]Notice:[/yellow] {w}")
 
 
+GATE_DISPLAY_NAMES = {
+    "STRATEGY_SIGNAL_VALID": "Strategy Technical Criteria (Trend, Alignment, RSI)",
+    "VALID_STOP_LOSS": "Stop Loss Geometry (Below Entry & Positive)",
+    "VALID_PROFIT_TARGET": "Profit Target Geometry (Above Entry)",
+    "MARKET_REGIME_BULLISH": "Macro Market Regime Gate (Benchmark > EMA 50)",
+    "MARKET_REGIME_BYPASSED": "Macro Market Regime Gate (Diagnostic Bypass)",
+    "DRAWDOWN_KILLSWITCH_INACTIVE": "Portfolio Drawdown Kill-Switch (< 10%)",
+    "NOT_ALREADY_HELD": "Position Duplication Filter (Not Already Held)",
+    "CONCURRENT_POSITIONS_AVAILABLE": "Portfolio Capacity (< 10 Positions)",
+    "OPEN_RISK_WITHIN_BUDGET": "Portfolio Open Risk Limit (<= 6.0% Total Equity)",
+    "SECTOR_EXPOSURE_COMPLIANT": "Sector Exposure Limit (<= 30% Concentration)",
+    "LIQUIDITY_SUFFICIENT": "Liquidity Threshold (20-day ADTV >= Rs. 5 Cr)",
+    "SURVEILLANCE_CLEAR": "Surveillance Restrictions (No ASM/GSM/Circuit Penalties)",
+    "SURVEILLANCE_ADVISORY": "Surveillance Check (Non-Restricted / Circular Advisory)",
+    "EARNINGS_CLEAR": "Corporate Earnings Blackout (Outside Window)",
+    "OPENING_GAP_WITHIN_TOLERANCE": "Opening Gap Boundary & Tolerance (<= 2%)",
+    "REWARD_TO_RISK_SATISFIED": "Effective Reward-to-Risk Ratio (>= 1.50)",
+}
+
+
 @app.command("screen")
 def screen_command(
     strategy: str = typer.Option("trend_pullback", "--strategy", "-s", help="Strategy identifier"),
     date_str: Optional[str] = typer.Option(None, "--date", "-d", help="Market date in YYYY-MM-DD format"),
     top_n: int = typer.Option(15, "--top", "-n", help="Maximum setups to display"),
+    ignore_regime: bool = typer.Option(False, "--ignore-regime", "-i", help="Bypass macro market regime gate for diagnostic screening"),
 ) -> None:
     """
     Screen securities for swing trade setups matching a strategy and passing all risk gates.
@@ -303,7 +324,7 @@ def screen_command(
 
     svc = ResearchService()
     try:
-        res = svc.screen(strategy_id=strategy, as_of_date=trade_date, top_n=top_n)
+        res = svc.screen(strategy_id=strategy, as_of_date=trade_date, top_n=top_n, ignore_regime=ignore_regime)
     except Exception as e:
         console.print(f"[bold red]Screen Failed:[/bold red] {e}")
         raise typer.Exit(code=1)
@@ -311,8 +332,9 @@ def screen_command(
     r = res["result"]
     setups = r.get("setups", [])
 
+    diag_notice = " [yellow](Diagnostic: Regime Ignored)[/yellow]" if ignore_regime else ""
     console.print(
-        f"\n[cyan]Signal Atlas Screener[/cyan] — Strategy: [bold]{strategy}[/bold] | As Of: [bold]{res['as_of']}[/bold]"
+        f"\n[cyan]Signal Atlas Screener[/cyan] — Strategy: [bold]{strategy}[/bold] | As Of: [bold]{res['as_of']}[/bold]{diag_notice}"
     )
     console.print(
         f"Screened Universe: {r.get('screened_universe_size', 0)} | Approved Candidates: [bold green]{r.get('approved_count', 0)}[/bold green]\n"
@@ -330,7 +352,7 @@ def screen_command(
     table.add_column("Target", justify="right", width=11)
     table.add_column("R:R", justify="right", width=7)
     table.add_column("Quantity", justify="right", width=9)
-    table.add_column("Capital (₹)", justify="right", width=12)
+    table.add_column("Capital (Rs.)", justify="right", width=14)
     table.add_column("Constraint", width=14)
 
     for s in setups:
@@ -354,6 +376,8 @@ def screen_command(
 def setup_command(
     symbol: str = typer.Argument(..., help="NSE stock symbol (e.g. RELIANCE)"),
     date_str: Optional[str] = typer.Option(None, "--date", "-d", help="Market date in YYYY-MM-DD format"),
+    ignore_regime: bool = typer.Option(False, "--ignore-regime", "-i", help="Bypass macro market regime gate for diagnostic setup evaluation"),
+    next_open: Optional[float] = typer.Option(None, "--next-open", help="Simulate next-session opening fill price for gap execution R:R test"),
 ) -> None:
     """
     Evaluate full trade setup, position sizing, and risk audit for a specific stock.
@@ -367,10 +391,27 @@ def setup_command(
             raise typer.Exit(code=1)
 
     svc = ResearchService()
-    res = svc.get_setup(symbol=symbol, as_of_date=trade_date)
+    eff_open = Decimal(str(next_open)) if next_open is not None else None
+    res = svc.get_setup(symbol=symbol, as_of_date=trade_date, next_open=eff_open, ignore_regime=ignore_regime)
     s = res["result"]
 
-    console.print(f"\n[cyan]Trade Setup Audit[/cyan] — Symbol: [bold]{symbol.upper()}[/bold] | As Of: [bold]{res['as_of']}[/bold]\n")
+    diag_note = " [yellow](Diagnostic: Regime Ignored)[/yellow]" if ignore_regime else ""
+    console.print(f"\n[cyan]Trade Setup Audit[/cyan] — Symbol: [bold]{symbol.upper()}[/bold] | As Of: [bold]{res['as_of']}[/bold]{diag_note}\n")
+
+    # Render Strategy Technical Conditions Checklist Table if available
+    conds = s.get("condition_evaluations") or []
+    if conds:
+        table_cond = Table(title="Strategy Technical Conditions Audit", show_header=True, header_style="bold magenta")
+        table_cond.add_column("Condition", style="bold", width=32)
+        table_cond.add_column("Criteria", style="dim", width=34)
+        table_cond.add_column("Actual / Observation", width=38)
+        table_cond.add_column("Status", justify="center", width=8)
+
+        for c in conds:
+            status_str = "[bold green]PASS[/bold green]" if c.get("passed") else "[bold red]FAIL[/bold red]"
+            table_cond.add_row(c.get("name", ""), c.get("criteria", ""), c.get("actual", ""), status_str)
+        console.print(table_cond)
+        console.print()
 
     if not s.get("is_approved"):
         console.print(f"[bold red]Signal State: {s.get('signal_state', 'AVOID')} (BLOCKED)[/bold red]")
@@ -394,7 +435,10 @@ def setup_command(
                 msg = fc.get('message') or fc.get('explanation', '')
                 console.print(f"  * [red][X][/red] {name}: {msg}")
         if s.get("passed_checks"):
-            console.print(f"\n[green]Passed Risk Checks:[/green] {len(s['passed_checks'])} gates verified")
+            console.print(f"\n[bold green]Passed Risk Checks ({len(s['passed_checks'])} verified):[/bold green]")
+            for pc in s["passed_checks"]:
+                name = GATE_DISPLAY_NAMES.get(pc, pc)
+                console.print(f"  * [green][v][/green] {name}")
         if res.get("warnings"):
             for w in res["warnings"]:
                 console.print(f"[yellow]Advisory Notice:[/yellow] {w}")
@@ -420,7 +464,10 @@ def setup_command(
     console.print(table)
 
     if s.get("passed_checks"):
-        console.print(f"\n[green]Passed Risk Checks:[/green] {len(s['passed_checks'])} gates verified")
+        console.print(f"\n[bold green]Passed Risk Checks ({len(s['passed_checks'])} verified):[/bold green]")
+        for pc in s["passed_checks"]:
+            name = GATE_DISPLAY_NAMES.get(pc, pc)
+            console.print(f"  * [green][v][/green] {name}")
     if res.get("warnings"):
         for w in res["warnings"]:
             console.print(f"[yellow]Advisory Notice:[/yellow] {w}")
