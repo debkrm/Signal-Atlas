@@ -1,0 +1,310 @@
+[
+  {
+    "file": "BhavCopy_NSE_CM_0_0_0_20240715_F_0000.csv.zip",
+    "format": "UDiFF",
+    "trade_date": "2024-07-15",
+    "total_rows": 2839,
+    "unique_isins": 2838,
+    "unique_symbols": 2835,
+    "duplicate_isins": 1,
+    "multi_series_isins_same_day": 1,
+    "duplicate_symbols": 4,
+    "duplicate_isin_sym": 1,
+    "blank_isins": 0,
+    "na_series_count": 5,
+    "duplicate_symbols_sample": [
+      "AARTISURF",
+      "RADIOCITY",
+      "GODREJCP",
+      "SHAREINDIA"
+    ]
+  },
+  {
+    "file": "BhavCopy_NSE_CM_0_0_0_20240805_F_0000.csv.zip",
+    "format": "UDiFF",
+    "trade_date": "2024-08-05",
+    "total_rows": 2859,
+    "unique_isins": 2858,
+    "unique_symbols": 2853,
+    "duplicate_isins": 1,
+    "multi_series_isins_same_day": 1,
+    "duplicate_symbols": 5,
+    "duplicate_isin_sym": 1,
+    "blank_isins": 0,
+    "na_series_count": 6,
+    "duplicate_symbols_sample": [
+      "IMC1",
+      "M&MFIN",
+      "SHAREINDIA",
+      "RADIOCITY",
+      "JUBLPHARMA"
+    ]
+  },
+  {
+    "file": "BhavCopy_NSE_CM_0_0_0_20240906_F_0000.csv.zip",
+    "format": "UDiFF",
+    "trade_date": "2024-09-06",
+    "total_rows": 2826,
+    "unique_isins": 2823,
+    "unique_symbols": 2818,
+    "duplicate_isins": 3,
+    "multi_series_isins_same_day": 3,
+    "duplicate_symbols": 6,
+    "duplicate_isin_sym": 3,
+    "blank_isins": 0,
+    "na_series_count": 7,
+    "duplicate_symbols_sample": [
+      "IMC1",
+      "RADIOCITY",
+      "SHRIPISTON",
+      "HGS",
+      "SHAREINDIA"
+    ]
+  },
+  {
+    "file": "BhavCopy_NSE_CM_0_0_0_20241004_F_0000.csv.zip",
+    "format": "UDiFF",
+    "trade_date": "2024-10-04",
+    "total_rows": 2917,
+    "unique_isins": 2917,
+    "unique_symbols": 2914,
+    "duplicate_isins": 0,
+    "multi_series_isins_same_day": 0,
+    "duplicate_symbols": 2,
+    "duplicate_isin_sym": 0,
+    "blank_isins": 0,
+    "na_series_count": 5,
+    "duplicate_symbols_sample": [
+      "IMC1",
+      "RADIOCITY"
+    ]
+  },
+  {
+    "file": "BhavCopy_NSE_CM_0_0_0_20241025_F_0000.csv.zip",
+    "format": "UDiFF",
+    "trade_date": "2024-10-25",
+    "total_rows": 2902,
+    "unique_isins": 2902,
+    "unique_symbols": 2898,
+    "duplicate_isins": 0,
+    "multi_series_isins_same_day": 0,
+    "duplicate_symbols": 2,
+    "duplicate_isin_sym": 0,
+    "blank_isins": 0,
+    "na_series_count": 8,
+    "duplicate_symbols_sample": [
+      "IMC1",
+      "RADIOCITY"
+    ]
+  },
+  {
+    "file": "cm03NOV2023bhav.csv.zip",
+    "format": "Legacy",
+    "trade_date": "03-NOV-2023",
+    "total_rows": 2588,
+    "unique_isins": 2586,
+    "unique_symbols": 2445,
+    "duplicate_isins": 2,
+    "multi_series_isins_same_day": 2,
+    "duplicate_symbols": 37,
+    "duplicate_isin_sym": 2,
+    "blank_isins": 0,
+    "na_series_count": 8,
+    "duplicate_symbols_sample": [
+      "SHRIRAMFIN",
+      "IIFL",
+      "IBULHSGFIN",
+      "IRFC",
+      "L&TFINANCE"
+    ]
+  },
+  {
+    "file": "cm10JAN2019bhav.csv.zip",
+    "format": "Legacy",
+    "trade_date": "10-JAN-2019",
+    "total_rows": 1883,
+    "unique_isins": 1883,
+    "unique_symbols": 1775,
+    "duplicate_isins": 0,
+    "multi_series_isins_same_day": 0,
+    "duplicate_symbols": 31,
+    "duplicate_isin_sym": 0,
+    "blank_isins": 0,
+    "na_series_count": 4,
+    "duplicate_symbols_sample": [
+      "ECLFINANCE",
+      "IDFCBANK",
+      "SRTRANSFIN",
+      "DHFL",
+      "HUDCO"
+    ]
+  },
+  {
+    "file": "cm10JAN2020bhav.csv.zip",
+    "format": "Legacy",
+    "trade_date": "10-JAN-2020",
+    "total_rows": 1970,
+    "unique_isins": 1970,
+    "unique_symbols": 1806,
+    "duplicate_isins": 0,
+    "multi_series_isins_same_day": 0,
+    "duplicate_symbols": 33,
+    "duplicate_isin_sym": 0,
+    "blank_isins": 0,
+    "na_series_count": 4,
+    "duplicate_symbols_sample": [
+      "SRTRANSFIN",
+      "ECLFINANCE",
+      "DHFL",
+      "ICFL",
+      "IDFCFIRSTB"
+    ]
+  },
+  {
+    "file": "cm12APR2024bhav.csv.zip",
+    "format": "Legacy",
+    "trade_date": "12-APR-2024",
+    "total_rows": 2728,
+    "unique_isins": 2728,
+    "unique_symbols": 2588,
+    "duplicate_isins": 0,
+    "multi_series_isins_same_day": 0,
+    "duplicate_symbols": 37,
+    "duplicate_isin_sym": 0,
+    "blank_isins": 0,
+    "na_series_count": 6,
+    "duplicate_symbols_sample": [
+      "IBULHSGFIN",
+      "IIFL",
+      "IRFC",
+      "DHANILOANS",
+      "NHAI"
+    ]
+  },
+  {
+    "file": "cm12JAN2024bhav.csv.zip",
+    "format": "Legacy",
+    "trade_date": "12-JAN-2024",
+    "total_rows": 2652,
+    "unique_isins": 2652,
+    "unique_symbols": 2504,
+    "duplicate_isins": 0,
+    "multi_series_isins_same_day": 0,
+    "duplicate_symbols": 41,
+    "duplicate_isin_sym": 0,
+    "blank_isins": 0,
+    "na_series_count": 7,
+    "duplicate_symbols_sample": [
+      "IBULHSGFIN",
+      "IIFL",
+      "SHRIRAMFIN",
+      "IRFC",
+      "NHAI"
+    ]
+  },
+  {
+    "file": "cm15JUN2023bhav.csv.zip",
+    "format": "Legacy",
+    "trade_date": "15-JUN-2023",
+    "total_rows": 2436,
+    "unique_isins": 2434,
+    "unique_symbols": 2299,
+    "duplicate_isins": 2,
+    "multi_series_isins_same_day": 2,
+    "duplicate_symbols": 36,
+    "duplicate_isin_sym": 2,
+    "blank_isins": 0,
+    "na_series_count": 6,
+    "duplicate_symbols_sample": [
+      "SHRIRAMFIN",
+      "IBULHSGFIN",
+      "IIFL",
+      "IRFC",
+      "ECLFINANCE"
+    ]
+  },
+  {
+    "file": "cm27JUL2022bhav.csv.zip",
+    "format": "Legacy",
+    "trade_date": "27-JUL-2022",
+    "total_rows": 2215,
+    "unique_isins": 2215,
+    "unique_symbols": 2107,
+    "duplicate_isins": 0,
+    "multi_series_isins_same_day": 0,
+    "duplicate_symbols": 31,
+    "duplicate_isin_sym": 0,
+    "blank_isins": 0,
+    "na_series_count": 5,
+    "duplicate_symbols_sample": [
+      "SRTRANSFIN",
+      "IIFL",
+      "ECLFINANCE",
+      "IRFC",
+      "L&TFINANCE"
+    ]
+  },
+  {
+    "file": "cm27SEP2023bhav.csv.zip",
+    "format": "Legacy",
+    "trade_date": "27-SEP-2023",
+    "total_rows": 2500,
+    "unique_isins": 2498,
+    "unique_symbols": 2357,
+    "duplicate_isins": 2,
+    "multi_series_isins_same_day": 2,
+    "duplicate_symbols": 36,
+    "duplicate_isin_sym": 2,
+    "blank_isins": 0,
+    "na_series_count": 4,
+    "duplicate_symbols_sample": [
+      "IBULHSGFIN",
+      "IIFL",
+      "SHRIRAMFIN",
+      "L&TFINANCE",
+      "IRFC"
+    ]
+  },
+  {
+    "file": "cm28JUL2022bhav.csv.zip",
+    "format": "Legacy",
+    "trade_date": "28-JUL-2022",
+    "total_rows": 2222,
+    "unique_isins": 2222,
+    "unique_symbols": 2107,
+    "duplicate_isins": 0,
+    "multi_series_isins_same_day": 0,
+    "duplicate_symbols": 30,
+    "duplicate_isin_sym": 0,
+    "blank_isins": 0,
+    "na_series_count": 5,
+    "duplicate_symbols_sample": [
+      "IIFL",
+      "RECLTD",
+      "SRTRANSFIN",
+      "IRFC",
+      "L&TFINANCE"
+    ]
+  },
+  {
+    "file": "cm28SEP2023bhav.csv.zip",
+    "format": "Legacy",
+    "trade_date": "28-SEP-2023",
+    "total_rows": 2517,
+    "unique_isins": 2516,
+    "unique_symbols": 2378,
+    "duplicate_isins": 1,
+    "multi_series_isins_same_day": 1,
+    "duplicate_symbols": 32,
+    "duplicate_isin_sym": 1,
+    "blank_isins": 0,
+    "na_series_count": 5,
+    "duplicate_symbols_sample": [
+      "IBULHSGFIN",
+      "IIFL",
+      "IRFC",
+      "NHAI",
+      "L&TFINANCE"
+    ]
+  }
+]

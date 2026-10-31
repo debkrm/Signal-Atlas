@@ -1,0 +1,125 @@
+{
+  "source_file": "BhavCopy_NSE_CM_0_0_0_20241025_F_0000.csv.zip",
+  "total_source_rows": 2902,
+  "unique_isins": 2902,
+  "unique_symbols": 2898,
+  "duplicate_isin_count": 0,
+  "duplicate_symbol_count": 2,
+  "duplicate_isin_symbol_rows": 0,
+  "duplicate_isin_series_rows": 0,
+  "multi_series_isins_on_same_date": 0,
+  "duplicate_symbols_detail": {
+    "IMC1": [
+      {
+        "TckrSymb": "IMC1",
+        "SctySrs": "N0",
+        "ISIN": "INE00QS24019",
+        "FinInstrmNm": "SEC RE NCGB 8.25% STRPP A",
+        "FinInstrmTp": "STK"
+      },
+      {
+        "TckrSymb": "IMC1",
+        "SctySrs": "N1",
+        "ISIN": "INE00QS24043",
+        "FinInstrmNm": "SEC RE NCGB 8.25% STRPP B",
+        "FinInstrmTp": "STK"
+      },
+      {
+        "TckrSymb": "IMC1",
+        "SctySrs": "N2",
+        "ISIN": "INE00QS24027",
+        "FinInstrmNm": "SEC RE NCGB 8.25% STRPP C",
+        "FinInstrmTp": "STK"
+      },
+      {
+        "TckrSymb": "IMC1",
+        "SctySrs": "N3",
+        "ISIN": "INE00QS24035",
+        "FinInstrmNm": "SEC RE NCGB 8.25% STRPP D",
+        "FinInstrmTp": "STK"
+      }
+    ],
+    "RADIOCITY": [
+      {
+        "TckrSymb": "RADIOCITY",
+        "SctySrs": "EQ",
+        "ISIN": "INE919I01024",
+        "FinInstrmNm": "MUSIC BROADCAST LIMITED",
+        "FinInstrmTp": "STK"
+      },
+      {
+        "TckrSymb": "RADIOCITY",
+        "SctySrs": "P1",
+        "ISIN": "INE919I04010",
+        "FinInstrmNm": "MUSIC BROADCAST LIMITED",
+        "FinInstrmTp": "STK"
+      }
+    ]
+  },
+  "series_distribution": {
+    "EQ": 1904,
+    "BE": 312,
+    "SM": 264,
+    "ST": 104,
+    "GB": 51,
+    "GS": 47,
+    "BZ": 26,
+    "TB": 22,
+    "N7": 12,
+    "N6": 12,
+    "N5": 9,
+    "N2": 9,
+    "N1": 8,
+    "N4": 8,
+    "E1": 7,
+    "N8": 6,
+    "N9": 6,
+    "N3": 5,
+    "ND": 5,
+    "NJ": 5,
+    "RR": 4,
+    "NE": 4,
+    "NC": 4,
+    "NB": 4,
+    "IV": 4,
+    "NN": 4,
+    "NM": 3,
+    "NX": 3,
+    "NL": 3,
+    "NF": 3,
+    "N0": 3,
+    "NO": 2,
+    "NI": 2,
+    "NT": 2,
+    "NH": 2,
+    "NG": 2,
+    "NR": 2,
+    "NS": 1,
+    "AX": 1,
+    "ZC": 1,
+    "NU": 1,
+    "Y1": 1,
+    "Y6": 1,
+    "BV": 1,
+    "YZ": 1,
+    "AP": 1,
+    "ZN": 1,
+    "AT": 1,
+    "AR": 1,
+    "SG": 1,
+    "YL": 1,
+    "NV": 1,
+    "X1": 1,
+    "YP": 1,
+    "P1": 1,
+    "AB": 1,
+    "NP": 1,
+    "NZ": 1
+  },
+  "instrument_type_distribution": {
+    "STK": 2902
+  },
+  "segment_distribution": {
+    "CM": 2902
+  }
+}
