@@ -46,6 +46,8 @@ def _get_symbol_data(symbol: str):
         hist = db.execute(
             select(InstrumentSymbolHistory).where(InstrumentSymbolHistory.symbol == symbol)
         ).scalars().first()
+        if hist is None:
+            pytest.skip(f"Historical dataset for symbol '{symbol}' not loaded in test database")
         inst_id = hist.instrument_id
 
         prices = db.execute(

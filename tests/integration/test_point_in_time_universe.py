@@ -23,6 +23,31 @@ def universe_service():
     return PointInTimeUniverseService()
 
 
+@pytest.fixture(autouse=True)
+def require_historical_dataset_for_bulk_tests(request):
+    """
+    In CI environments without the 2GB uncommitted bulk historical dataset,
+    tests inspecting pre-existing historical market symbols are skipped.
+    Behavioral tests with inserted fixture rows run and verify functionality.
+    """
+    historical_tests = {
+        "test_1_listing_date_not_inferred_from_first_observed_historical_data",
+        "test_2_first_observed_trade_date_correctly_populated",
+        "test_4_trading_completeness_never_exceeds_100_percent",
+        "test_5_turnover_not_double_counted",
+        "test_6_historical_be_series_not_replaced_by_eq",
+        "test_11_historical_snapshots_retain_data_and_config_identifiers",
+        "test_12_existing_hdfc_historical_inclusion_remains_valid",
+        "test_13_existing_symbol_and_isin_changes_resolve_correctly",
+        "test_14_universe_calculations_remain_bounded_by_as_of_date",
+    }
+    if request.node.name in historical_tests:
+        with get_db() as db:
+            inst_count = db.execute(select(text("count(*) FROM instruments"))).scalar()
+            if inst_count == 0:
+                pytest.skip("Bulk historical NSE dataset not present in test database")
+
+
 # -------------------------------------------------------------------------
 # Test 1: listing_date is not inferred from first observed historical data
 # -------------------------------------------------------------------------
@@ -124,6 +149,14 @@ def test_3_duplicate_eq_be_rows_do_not_inflate_observed_sessions(universe_servic
         db.commit()
 
         run_id = db.execute(text("SELECT run_id FROM ingestion_runs LIMIT 1")).scalar()
+        if not run_id:
+            run_id = "test-fixture-run-001"
+            db.execute(text("""
+                INSERT INTO ingestion_runs (run_id, source, trade_date, file_name, file_hash, parser_version, status, row_count)
+                VALUES (:rid, 'NSE', '2022-01-03', 'fixture.zip', 'hash123', 'v1', 'SUCCESS', 0)
+                ON CONFLICT (run_id) DO NOTHING
+            """), {"rid": run_id})
+            db.commit()
         inst = Instrument(
             instrument_id=test_id,
             name="Duplicate Test Corp",
@@ -719,6 +752,14 @@ def test_19_pit_series_transition_boundary_handling(universe_service):
         db.commit()
 
         run_id = db.execute(text("SELECT run_id FROM ingestion_runs LIMIT 1")).scalar()
+        if not run_id:
+            run_id = "test-fixture-run-001"
+            db.execute(text("""
+                INSERT INTO ingestion_runs (run_id, source, trade_date, file_name, file_hash, parser_version, status, row_count)
+                VALUES (:rid, 'NSE', '2022-01-03', 'fixture.zip', 'hash123', 'v1', 'SUCCESS', 0)
+                ON CONFLICT (run_id) DO NOTHING
+            """), {"rid": run_id})
+            db.commit()
         inst = Instrument(
             instrument_id=test_id,
             name="Transition Test Corp",
