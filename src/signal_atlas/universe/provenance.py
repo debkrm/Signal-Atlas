@@ -1,3 +1,10 @@
+"""Exact input provenance for point-in-time universe construction.
+
+The manifest deliberately covers source tables read by the universe service. It
+does not cover ``daily_prices_adjusted``: that table is derived data and is not
+read while a universe snapshot is built.
+"""
+
 import datetime
 from decimal import Decimal
 import hashlib
@@ -5,118 +12,198 @@ import json
 import os
 from pathlib import Path
 import subprocess
-from typing import Any, Dict, Optional
-from pydantic import BaseModel, ConfigDict
-from sqlalchemy import text
+from typing import Any, Dict, Optional, Sequence, Tuple
+
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+from signal_atlas.db.models.calendar import TradingCalendar
+from signal_atlas.db.models.corporate_actions import CorporateAction
+from signal_atlas.db.models.ingestion import IngestionRun
+from signal_atlas.db.models.instruments import Instrument, InstrumentSymbolHistory
+from signal_atlas.db.models.prices import DailyPriceRaw
+from signal_atlas.db.models.quarantine import DailyPriceQuarantine
+
+
+MANIFEST_FORMAT = "signal-atlas-universe-inputs-v2"
+_STREAM_BATCH_SIZE = 5_000
+
+
+def _git_output(repo_root: Path, args: Sequence[str]) -> str:
+    return subprocess.run(
+        ["git", *args], capture_output=True, text=True, check=True, cwd=str(repo_root)
+    ).stdout
 
 
 def get_code_revision() -> str:
+    """Return HEAD plus a deterministic fingerprint of relevant local changes.
+
+    The dirty fingerprint separately frames staged and unstaged diffs under
+    ``src/`` and ``alembic/`` and the path/content of untracked Python files in
+    those directories. Other untracked artifacts do not affect executable
+    universe code provenance.
     """
-    Captures the exact verifiable code revision:
-    1. GITHUB_SHA environment variable in CI environments.
-    2. Local Git HEAD commit SHA.
-    3. If working tree has modified tracked source files, appends '-dirty-{diff_hash}'.
-    4. Deterministic SHA-256 source-tree fingerprint fallback if git is unavailable.
-    """
-    # 1. Check CI environment variable
     ci_sha = os.environ.get("GITHUB_SHA")
     if ci_sha:
         return ci_sha.strip()
 
-    # 2. Query local git repository
-    repo_root = Path(__file__).resolve().parents[3]
-    try:
-        head_proc = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=str(repo_root),
-        )
-        head_sha = head_proc.stdout.strip()
+    return _get_code_revision(Path(__file__).resolve().parents[3])
 
-        # Check for uncommitted modifications in tracked source and migration files
-        diff_proc = subprocess.run(
-            ["git", "diff", "HEAD", "--", "src/", "alembic/"],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=str(repo_root),
+
+def _get_code_revision(repo_root: Path) -> str:
+    """Implementation split out to make isolated repository tests possible."""
+    try:
+        head_sha = _git_output(repo_root, ["rev-parse", "HEAD"]).strip()
+        staged = _git_output(repo_root, ["diff", "--cached", "--", "src/", "alembic/"])
+        unstaged = _git_output(repo_root, ["diff", "--", "src/", "alembic/"])
+        untracked_paths = sorted(
+            path for path in _git_output(
+                repo_root, ["ls-files", "--others", "--exclude-standard", "--", "src/", "alembic/"]
+            ).splitlines()
+            if path.endswith(".py")
         )
-        diff_output = diff_proc.stdout
-        if diff_output:
-            diff_hash = hashlib.sha256(diff_output.encode("utf-8")).hexdigest()[:12]
-            return f"{head_sha}-dirty-{diff_hash}"
+
+        dirty = _dirty_fingerprint(
+            staged,
+            unstaged,
+            [(path, (repo_root / path).read_bytes()) for path in untracked_paths],
+        )
+
+        if staged or unstaged or untracked_paths:
+            return f"{head_sha}-dirty-{dirty.hexdigest()}"
         return head_sha
     except Exception:
-        # Fallback: compute deterministic hash of source tree
         try:
-            h = hashlib.sha256()
-            src_dir = repo_root / "src"
-            for p in sorted(src_dir.rglob("*.py")):
-                h.update(p.relative_to(repo_root).as_posix().encode("utf-8"))
-                h.update(p.read_bytes())
-            return f"source-hash-{h.hexdigest()[:40]}"
+            source_files = sorted(
+                [*repo_root.joinpath("src").rglob("*.py"), *repo_root.joinpath("alembic").rglob("*.py")]
+            )
+            digest = hashlib.sha256()
+            for path in source_files:
+                digest.update(path.relative_to(repo_root).as_posix().encode("utf-8"))
+                digest.update(b"\0")
+                digest.update(path.read_bytes())
+                digest.update(b"\0")
+            return f"source-hash-{digest.hexdigest()}"
         except Exception:
-            return "phase-1b-iii.1-untracked"
+            return "untracked-source"
+
+
+def _dirty_fingerprint(
+    staged: str,
+    unstaged: str,
+    untracked_files: Sequence[Tuple[str, bytes]],
+) -> str:
+    """Hash separately framed staged, unstaged, and untracked source state."""
+    digest = hashlib.sha256()
+    for label, value in (("staged", staged), ("unstaged", unstaged)):
+        digest.update(label.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(value.encode("utf-8"))
+        digest.update(b"\0")
+    for relative_path, contents in sorted(untracked_files):
+        digest.update(b"untracked\0")
+        digest.update(relative_path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(contents)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _canonical_value(value: Any) -> Dict[str, Any]:
+    """Encode values with explicit type tags, preserving NULL and empty strings."""
+    if value is None:
+        return {"type": "null"}
+    if isinstance(value, bool):
+        return {"type": "bool", "value": value}
+    if isinstance(value, int):
+        return {"type": "int", "value": str(value)}
+    if isinstance(value, Decimal):
+        return {"type": "decimal", "value": format(value, "f")}
+    if isinstance(value, datetime.datetime):
+        return {"type": "datetime", "value": value.isoformat()}
+    if isinstance(value, datetime.date):
+        return {"type": "date", "value": value.isoformat()}
+    if isinstance(value, str):
+        return {"type": "string", "value": value}
+    if isinstance(value, (list, tuple)):
+        return {"type": "array", "value": [_canonical_value(item) for item in value]}
+    if isinstance(value, dict):
+        return {
+            "type": "object",
+            "value": {str(key): _canonical_value(value[key]) for key in sorted(value, key=str)},
+        }
+    if isinstance(value, float):
+        return {"type": "float", "value": value.hex()}
+    raise TypeError(f"Unsupported provenance value type: {type(value)!r}")
+
+
+def _frame(digest: Any, value: Any) -> None:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    digest.update(len(payload).to_bytes(8, "big"))
+    digest.update(payload)
+
+
+def _stream_table(session: Session, table: Any, primary_key_columns: Sequence[Any]) -> Tuple[str, int, Optional[datetime.date], Optional[datetime.date]]:
+    """Hash every row in primary-key order without materialising the table."""
+    digest = hashlib.sha256()
+    _frame(digest, {"table": table.name, "columns": [column.name for column in table.c]})
+    statement = select(*table.c).order_by(*primary_key_columns).execution_options(
+        stream_results=True, yield_per=_STREAM_BATCH_SIZE
+    )
+    result = session.execute(statement).mappings().yield_per(_STREAM_BATCH_SIZE)
+    count = 0
+    min_trade_date: Optional[datetime.date] = None
+    max_trade_date: Optional[datetime.date] = None
+    for row in result:
+        _frame(digest, {column.name: _canonical_value(row[column.name]) for column in table.c})
+        count += 1
+        if table.name == "daily_prices_raw":
+            trade_date = row["trade_date"]
+            min_trade_date = trade_date if min_trade_date is None or trade_date < min_trade_date else min_trade_date
+            max_trade_date = trade_date if max_trade_date is None or trade_date > max_trade_date else max_trade_date
+    return digest.hexdigest(), count, min_trade_date, max_trade_date
 
 
 class RawDataManifest(BaseModel):
-    """
-    Deterministic cryptographic manifest of the raw data contents used in universe construction.
-    Covers daily_prices_raw, instruments, instrument_symbol_history, trading_calendar,
-    quarantine records, and ingestion runs.
-    """
+    """Exact, versioned SHA-256 provenance for universe-construction inputs."""
     model_config = ConfigDict(frozen=True)
 
-    prices_row_count: int
+    format_version: str = MANIFEST_FORMAT
+    table_row_counts: Dict[str, int] = Field(default_factory=dict)
+    table_hashes: Dict[str, str] = Field(default_factory=dict)
+    prices_row_count: int = 0
     prices_min_date: Optional[datetime.date] = None
     prices_max_date: Optional[datetime.date] = None
-    prices_sum_volume: Optional[int] = None
-    prices_sum_traded_value: Optional[Decimal] = None
-    prices_sum_close: Optional[Decimal] = None
-    prices_null_turnover_count: int = 0
     instruments_count: int = 0
-    instruments_hash: Optional[str] = None
     symbol_history_count: int = 0
-    symbol_history_hash: Optional[str] = None
     quarantine_records_count: int = 0
-    quarantine_hash: Optional[str] = None
     calendar_trading_days_count: int = 0
     calendar_min_date: Optional[datetime.date] = None
     calendar_max_date: Optional[datetime.date] = None
     ingestion_runs_count: int = 0
-    ingestion_archive_hashes_digest: Optional[str] = None
+    corporate_actions_count: int = 0
     manifest_fingerprint: str
 
     def canonical_dict(self) -> Dict[str, Any]:
-        def _ser(v: Any) -> Any:
-            if isinstance(v, Decimal):
-                return f"{v:f}"
-            if isinstance(v, (datetime.date, datetime.datetime)):
-                return v.isoformat()
-            return v
+        def serialize(value: Any) -> Any:
+            return value.isoformat() if isinstance(value, (datetime.date, datetime.datetime)) else value
 
         return {
-            "calendar_max_date": _ser(self.calendar_max_date),
-            "calendar_min_date": _ser(self.calendar_min_date),
-            "calendar_trading_days_count": self.calendar_trading_days_count,
-            "ingestion_archive_hashes_digest": self.ingestion_archive_hashes_digest,
-            "ingestion_runs_count": self.ingestion_runs_count,
-            "instruments_count": self.instruments_count,
-            "instruments_hash": self.instruments_hash,
-            "prices_max_date": _ser(self.prices_max_date),
-            "prices_min_date": _ser(self.prices_min_date),
-            "prices_null_turnover_count": self.prices_null_turnover_count,
+            "format_version": self.format_version,
+            "table_row_counts": dict(sorted(self.table_row_counts.items())),
+            "table_hashes": dict(sorted(self.table_hashes.items())),
             "prices_row_count": self.prices_row_count,
-            "prices_sum_close": _ser(self.prices_sum_close),
-            "prices_sum_traded_value": _ser(self.prices_sum_traded_value),
-            "prices_sum_volume": self.prices_sum_volume,
-            "quarantine_hash": self.quarantine_hash,
-            "quarantine_records_count": self.quarantine_records_count,
+            "prices_min_date": serialize(self.prices_min_date),
+            "prices_max_date": serialize(self.prices_max_date),
+            "instruments_count": self.instruments_count,
             "symbol_history_count": self.symbol_history_count,
-            "symbol_history_hash": self.symbol_history_hash,
+            "quarantine_records_count": self.quarantine_records_count,
+            "calendar_trading_days_count": self.calendar_trading_days_count,
+            "calendar_min_date": serialize(self.calendar_min_date),
+            "calendar_max_date": serialize(self.calendar_max_date),
+            "ingestion_runs_count": self.ingestion_runs_count,
+            "corporate_actions_count": self.corporate_actions_count,
         }
 
     def canonical_json(self) -> str:
@@ -124,162 +211,55 @@ class RawDataManifest(BaseModel):
 
 
 def compute_raw_data_manifest(session: Session) -> RawDataManifest:
+    """Compute an exact streaming manifest of all direct universe inputs.
+
+    ``corporate_actions`` is included because unresolved action statuses determine
+    the quarantine set. ``daily_prices_adjusted`` is excluded because universe
+    construction reads raw prices only.
     """
-    Scans the database and computes a verifiable cryptographic manifest of all raw data.
-    Any modification to a traded value, close price, volume, instrument, symbol history,
-    calendar day, or archive hash alters the manifest_fingerprint.
-    """
-    bind = session.get_bind()
-    is_postgres = bind.dialect.name == "postgresql"
+    table_specs = (
+        (DailyPriceRaw.__table__, (DailyPriceRaw.__table__.c.id,)),
+        (Instrument.__table__, (Instrument.__table__.c.instrument_id,)),
+        (InstrumentSymbolHistory.__table__, (InstrumentSymbolHistory.__table__.c.id,)),
+        (TradingCalendar.__table__, (TradingCalendar.__table__.c.trade_date,)),
+        (DailyPriceQuarantine.__table__, (DailyPriceQuarantine.__table__.c.id,)),
+        (IngestionRun.__table__, (IngestionRun.__table__.c.run_id,)),
+        (CorporateAction.__table__, (CorporateAction.__table__.c.action_id,)),
+    )
+    manifest_digest = hashlib.sha256()
+    _frame(manifest_digest, {"format_version": MANIFEST_FORMAT})
+    table_hashes: Dict[str, str] = {}
+    row_counts: Dict[str, int] = {}
+    price_min: Optional[datetime.date] = None
+    price_max: Optional[datetime.date] = None
 
-    # 1. Daily Prices Raw
-    p_row = session.execute(text("""
-        SELECT
-            count(*) as count,
-            min(trade_date) as min_date,
-            max(trade_date) as max_date,
-            sum(volume) as total_volume,
-            sum(traded_value) as total_value,
-            count(*) FILTER (WHERE traded_value IS NULL) as null_value_count,
-            sum(close) as sum_close
-        FROM daily_prices_raw
-    """)).mappings().one()
+    for table, primary_key_columns in table_specs:
+        table_hash, count, min_date, max_date = _stream_table(session, table, primary_key_columns)
+        table_hashes[table.name] = table_hash
+        row_counts[table.name] = count
+        _frame(manifest_digest, {"table": table.name, "row_count": count, "sha256": table_hash})
+        if table.name == "daily_prices_raw":
+            price_min, price_max = min_date, max_date
 
-    p_count = int(p_row["count"] or 0)
-    p_min_date = p_row["min_date"]
-    if isinstance(p_min_date, str):
-        p_min_date = datetime.date.fromisoformat(p_min_date)
-    p_max_date = p_row["max_date"]
-    if isinstance(p_max_date, str):
-        p_max_date = datetime.date.fromisoformat(p_max_date)
-    p_vol = int(p_row["total_volume"] or 0) if p_count > 0 else 0
-    p_val = Decimal(str(p_row["total_value"])) if p_row["total_value"] is not None else None
-    p_close = Decimal(str(p_row["sum_close"])) if p_row["sum_close"] is not None else None
-    p_null_cnt = int(p_row["null_value_count"] or 0)
-
-    # 2. Instruments
-    if is_postgres:
-        inst_row = session.execute(text("""
-            SELECT
-                count(*) as count,
-                md5(string_agg(concat_ws(':', instrument_id, status, coalesce(first_observed_trade_date::text, 'N'), coalesce(listing_date::text, 'N')), ';' ORDER BY instrument_id)) as hash
-            FROM instruments
-        """)).mappings().one()
-        inst_count = int(inst_row["count"] or 0)
-        inst_hash = inst_row["hash"]
-    else:
-        inst_rows = session.execute(text("SELECT instrument_id, status, first_observed_trade_date, listing_date FROM instruments ORDER BY instrument_id")).mappings().all()
-        inst_count = len(inst_rows)
-        inst_content = ";".join(f"{r['instrument_id']}:{r['status']}:{r['first_observed_trade_date']}:{r['listing_date']}" for r in inst_rows)
-        inst_hash = hashlib.md5(inst_content.encode("utf-8")).hexdigest() if inst_rows else None
-
-    # 3. Instrument Symbol History
-    if is_postgres:
-        sym_row = session.execute(text("""
-            SELECT
-                count(*) as count,
-                md5(string_agg(concat_ws(':', instrument_id, symbol, series, isin, valid_from::text, coalesce(valid_to::text, 'N')), ';' ORDER BY instrument_id, valid_from, series)) as hash
-            FROM instrument_symbol_history
-        """)).mappings().one()
-        sym_count = int(sym_row["count"] or 0)
-        sym_hash = sym_row["hash"]
-    else:
-        sym_rows = session.execute(text("SELECT instrument_id, symbol, series, isin, valid_from, valid_to FROM instrument_symbol_history ORDER BY instrument_id, valid_from, series")).mappings().all()
-        sym_count = len(sym_rows)
-        sym_content = ";".join(f"{r['instrument_id']}:{r['symbol']}:{r['series']}:{r['isin']}:{r['valid_from']}:{r['valid_to']}" for r in sym_rows)
-        sym_hash = hashlib.md5(sym_content.encode("utf-8")).hexdigest() if sym_rows else None
-
-    # 4. Quarantine Records
-    if is_postgres:
-        q_row = session.execute(text("""
-            SELECT
-                count(*) as count,
-                md5(string_agg(concat_ws(':', coalesce(instrument_id, 'N'), trade_date::text, validation_rule, validation_message), ';' ORDER BY id)) as hash
-            FROM daily_price_quarantine
-        """)).mappings().one()
-        q_count = int(q_row["count"] or 0)
-        q_hash = q_row["hash"]
-    else:
-        q_rows = session.execute(text("SELECT instrument_id, trade_date, validation_rule, validation_message FROM daily_price_quarantine ORDER BY id")).mappings().all()
-        q_count = len(q_rows)
-        q_content = ";".join(f"{r['instrument_id']}:{r['trade_date']}:{r['validation_rule']}:{r['validation_message']}" for r in q_rows)
-        q_hash = hashlib.md5(q_content.encode("utf-8")).hexdigest() if q_rows else None
-
-    # 5. Trading Calendar
-    cal_row = session.execute(text("""
-        SELECT
-            count(*) as count,
-            min(trade_date) as min_date,
-            max(trade_date) as max_date
-        FROM trading_calendar
-        WHERE is_trading_day = true
-    """)).mappings().one()
-    cal_count = int(cal_row["count"] or 0)
-    cal_min = cal_row["min_date"]
-    if isinstance(cal_min, str):
-        cal_min = datetime.date.fromisoformat(cal_min)
-    cal_max = cal_row["max_date"]
-    if isinstance(cal_max, str):
-        cal_max = datetime.date.fromisoformat(cal_max)
-
-    # 6. Ingestion Runs & Archive Hashes
-    if is_postgres:
-        run_row = session.execute(text("""
-            SELECT
-                count(*) as count,
-                md5(string_agg(file_hash, ',' ORDER BY file_hash)) as hash
-            FROM ingestion_runs
-        """)).mappings().one()
-        run_count = int(run_row["count"] or 0)
-        run_hash = run_row["hash"]
-    else:
-        run_rows = session.execute(text("SELECT file_hash FROM ingestion_runs ORDER BY file_hash")).mappings().all()
-        run_count = len(run_rows)
-        run_content = ",".join(str(r["file_hash"]) for r in run_rows)
-        run_hash = hashlib.md5(run_content.encode("utf-8")).hexdigest() if run_rows else None
-
-    # Build intermediate dictionary to compute overall SHA-256 fingerprint
-    intermediate = {
-        "calendar_max_date": cal_max.isoformat() if cal_max else None,
-        "calendar_min_date": cal_min.isoformat() if cal_min else None,
-        "calendar_trading_days_count": cal_count,
-        "ingestion_archive_hashes_digest": run_hash,
-        "ingestion_runs_count": run_count,
-        "instruments_count": inst_count,
-        "instruments_hash": inst_hash,
-        "prices_max_date": p_max_date.isoformat() if p_max_date else None,
-        "prices_min_date": p_min_date.isoformat() if p_min_date else None,
-        "prices_null_turnover_count": p_null_cnt,
-        "prices_row_count": p_count,
-        "prices_sum_close": f"{p_close:f}" if p_close is not None else None,
-        "prices_sum_traded_value": f"{p_val:f}" if p_val is not None else None,
-        "prices_sum_volume": p_vol,
-        "quarantine_hash": q_hash,
-        "quarantine_records_count": q_count,
-        "symbol_history_count": sym_count,
-        "symbol_history_hash": sym_hash,
-    }
-    canonical_bytes = json.dumps(intermediate, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    manifest_fingerprint = hashlib.sha256(canonical_bytes).hexdigest()
+    calendar_rows = session.execute(
+        select(TradingCalendar.trade_date)
+        .where(TradingCalendar.is_trading_day.is_(True))
+        .order_by(TradingCalendar.trade_date)
+    ).scalars().all()
 
     return RawDataManifest(
-        prices_row_count=p_count,
-        prices_min_date=p_min_date,
-        prices_max_date=p_max_date,
-        prices_sum_volume=p_vol,
-        prices_sum_traded_value=p_val,
-        prices_sum_close=p_close,
-        prices_null_turnover_count=p_null_cnt,
-        instruments_count=inst_count,
-        instruments_hash=inst_hash,
-        symbol_history_count=sym_count,
-        symbol_history_hash=sym_hash,
-        quarantine_records_count=q_count,
-        quarantine_hash=q_hash,
-        calendar_trading_days_count=cal_count,
-        calendar_min_date=cal_min,
-        calendar_max_date=cal_max,
-        ingestion_runs_count=run_count,
-        ingestion_archive_hashes_digest=run_hash,
-        manifest_fingerprint=manifest_fingerprint,
+        table_row_counts=row_counts,
+        table_hashes=table_hashes,
+        prices_row_count=row_counts[DailyPriceRaw.__tablename__],
+        prices_min_date=price_min,
+        prices_max_date=price_max,
+        instruments_count=row_counts[Instrument.__tablename__],
+        symbol_history_count=row_counts[InstrumentSymbolHistory.__tablename__],
+        quarantine_records_count=row_counts[DailyPriceQuarantine.__tablename__],
+        calendar_trading_days_count=len(calendar_rows),
+        calendar_min_date=calendar_rows[0] if calendar_rows else None,
+        calendar_max_date=calendar_rows[-1] if calendar_rows else None,
+        ingestion_runs_count=row_counts[IngestionRun.__tablename__],
+        corporate_actions_count=row_counts[CorporateAction.__tablename__],
+        manifest_fingerprint=manifest_digest.hexdigest(),
     )

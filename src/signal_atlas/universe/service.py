@@ -15,7 +15,7 @@ from signal_atlas.db.models.universe import UniverseMemberRecord, UniverseSnapsh
 from signal_atlas.db.session import get_db
 from signal_atlas.quality.adjustment import AdjustedPriceRecord, get_point_in_time_adjusted_history
 from signal_atlas.quality.bulk_adjustment import get_quarantined_unresolved_instruments
-from signal_atlas.universe.provenance import compute_raw_data_manifest, get_code_revision
+from signal_atlas.universe.provenance import RawDataManifest, compute_raw_data_manifest
 from signal_atlas.universe.models import (
     EligibilityReason,
     UniverseConfig,
@@ -34,6 +34,24 @@ class PointInTimeUniverseService:
 
     def __init__(self, db: Optional[Session] = None):
         self._external_db = db
+
+    @staticmethod
+    def _bind_manifest(
+        config: UniverseConfig,
+        raw_manifest: RawDataManifest,
+    ) -> UniverseConfig:
+        """Bind a verified current raw-data identity before deriving cache identity."""
+        supplied_hash = config.raw_data_manifest_hash
+        if supplied_hash and supplied_hash != raw_manifest.manifest_fingerprint:
+            raise ValueError(
+                "Supplied raw_data_manifest_hash does not match the current raw-data manifest."
+            )
+        return config.model_copy(
+            update={
+                "raw_data_manifest_hash": raw_manifest.manifest_fingerprint,
+                "raw_data_version": f"RAW-MANIFEST-{raw_manifest.manifest_fingerprint[:16]}",
+            }
+        )
 
     def get_completed_trading_sessions(
         self,
@@ -71,6 +89,7 @@ class PointInTimeUniverseService:
         config: Optional[UniverseConfig] = None,
         persist: bool = True,
         session: Optional[Session] = None,
+        raw_manifest: Optional[RawDataManifest] = None,
     ) -> UniverseSnapshot:
         """
         Computes the complete, deterministic Point-in-Time Universe for as_of_date.
@@ -79,13 +98,9 @@ class PointInTimeUniverseService:
         db_cm = get_db(session or self._external_db)
 
         with db_cm as db:
-            # -1. Compute verifiable raw data manifest and bind to configuration if not explicitly provided
-            raw_manifest = compute_raw_data_manifest(db)
-            if cfg.raw_data_manifest_hash is None:
-                cfg = cfg.model_copy(update={
-                    "raw_data_manifest_hash": raw_manifest.manifest_fingerprint,
-                    "raw_data_version": f"RAW-MANIFEST-{raw_manifest.manifest_fingerprint[:16]}",
-                })
+            # -1. Bind the current manifest before deriving the effective configuration identity.
+            raw_manifest = raw_manifest or compute_raw_data_manifest(db)
+            cfg = self._bind_manifest(cfg, raw_manifest)
 
             # 0. Validate as_of_date against coverage bounds and trading calendar
             if as_of_date > cfg.data_coverage_end:
@@ -547,12 +562,16 @@ class PointInTimeUniverseService:
         db_cm = get_db(session or self._external_db)
 
         with db_cm as db:
+            raw_manifest = compute_raw_data_manifest(db)
+            cfg = self._bind_manifest(cfg, raw_manifest)
             snap_rec = db.execute(
                 select(UniverseSnapshotRecord).where(
                     UniverseSnapshotRecord.as_of_date == as_of_date,
                     UniverseSnapshotRecord.config_identifier == cfg.config_identifier,
                     UniverseSnapshotRecord.adjustment_version == cfg.adjustment_version,
                     UniverseSnapshotRecord.raw_data_version == cfg.raw_data_version,
+                    UniverseSnapshotRecord.raw_data_manifest_hash == raw_manifest.manifest_fingerprint,
+                    UniverseSnapshotRecord.code_revision == cfg.code_revision,
                 )
             ).scalars().first()
 
@@ -604,6 +623,8 @@ class PointInTimeUniverseService:
                     config_identifier=snap_rec.config_identifier,
                     adjustment_version=snap_rec.adjustment_version,
                     raw_data_version=snap_rec.raw_data_version,
+                    raw_data_manifest_hash=raw_manifest.manifest_fingerprint,
+                    raw_data_manifest=raw_manifest.canonical_dict(),
                     data_coverage_start=snap_rec.data_coverage_start,
                     data_coverage_end=snap_rec.data_coverage_end,
                     code_revision=snap_rec.code_revision,
@@ -615,7 +636,13 @@ class PointInTimeUniverseService:
                 )
 
             # If not yet persisted, compute and persist
-            return self.build_universe(as_of_date, config=cfg, persist=True, session=db)
+            return self.build_universe(
+                as_of_date,
+                config=cfg,
+                persist=True,
+                session=db,
+                raw_manifest=raw_manifest,
+            )
 
     def get_universe_adjusted_prices(
         self,
