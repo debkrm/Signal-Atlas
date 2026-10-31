@@ -377,7 +377,9 @@ def setup_command(
         if s.get("failed_checks"):
             console.print("\n[bold]Failed Gates:[/bold]")
             for fc in s["failed_checks"]:
-                console.print(f"  • [red]✗[/red] {fc['check_name']}: {fc['explanation']}")
+                name = fc.get('name') or fc.get('check_id', 'Gate')
+                msg = fc.get('message') or fc.get('explanation', '')
+                console.print(f"  * [red][X][/red] {name}: {msg}")
         console.print()
         return
 
