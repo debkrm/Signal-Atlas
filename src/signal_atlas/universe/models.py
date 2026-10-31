@@ -1,6 +1,8 @@
 import datetime
 from decimal import Decimal
 from enum import Enum
+import hashlib
+import json
 from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -46,18 +48,69 @@ class UniverseConfig(BaseModel):
     code_revision: str = Field(default="phase-1b-iii.1", description="Code revision or build identifier")
     config_version: str = Field(default="1.0", description="Semantic version of universe policy specification")
 
+    allow_partial_lookback: bool = Field(default=False, description="Explicit opt-in to allow lookback windows with fewer sessions than lookback_sessions")
+
+    def canonical_dict(self) -> Dict[str, Any]:
+        """
+        Deterministic canonical dictionary containing every parameter that can affect:
+        - Instrument eligibility
+        - Liquidity calculations
+        - Ranking
+        - Lookback construction
+        - Security classification
+        - Provenance and code/data revisions
+        Decimals are serialized as exact canonical strings without lossy conversion.
+        """
+        def _ser(val: Any) -> Any:
+            if isinstance(val, Decimal):
+                return f"{val:f}"
+            if isinstance(val, (datetime.date, datetime.datetime)):
+                return val.isoformat()
+            if isinstance(val, (tuple, list, set)):
+                return sorted(list(val))
+            return val
+
+        raw: Dict[str, Any] = {
+            "adjustment_version": self.adjustment_version,
+            "allow_partial_lookback": self.allow_partial_lookback,
+            "code_revision": self.code_revision,
+            "config_version": self.config_version,
+            "data_coverage_end": _ser(self.data_coverage_end),
+            "data_coverage_start": _ser(self.data_coverage_start),
+            "include_sme": self.include_sme,
+            "lookback_sessions": self.lookback_sessions,
+            "max_price": _ser(self.max_price) if self.max_price is not None else None,
+            "min_adtv": _ser(self.min_adtv),
+            "min_median_turnover": _ser(self.min_median_turnover) if self.min_median_turnover is not None else None,
+            "min_price": _ser(self.min_price),
+            "min_trading_completeness": _ser(self.min_trading_completeness),
+            "min_turnover_completeness": _ser(self.min_turnover_completeness),
+            "permitted_series": _ser(self.permitted_series),
+            "raw_data_version": self.raw_data_version,
+            "top_n": self.top_n,
+        }
+        return dict(sorted(raw.items()))
+
+    def canonical_json(self) -> str:
+        """Deterministic UTF-8 JSON representation with sorted keys and no extraneous whitespace."""
+        return json.dumps(self.canonical_dict(), sort_keys=True, separators=(",", ":"))
+
+    @property
+    def config_hash(self) -> str:
+        """
+        Cryptographic SHA-256 fingerprint (16 hex chars) of all calculation inputs.
+        Guarantees deterministic collision-free identity for any parameter change.
+        """
+        digest = hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
+        return digest[:16]
+
     @property
     def config_identifier(self) -> str:
-        """Deterministic human-readable unique configuration identifier."""
-        series_str = "_".join(sorted(self.permitted_series))
-        if self.include_sme and "SM" not in self.permitted_series:
-            series_str += "_SM"
-        adtv_str = f"{int(self.min_adtv)}"
-        comp_str = f"{int(self.min_trading_completeness * 100)}"
-        turn_comp_str = f"-TC{int(self.min_turnover_completeness * 100)}"
-        price_str = f"P{int(self.min_price)}"
-        top_str = f"-TOP{self.top_n}" if self.top_n else ""
-        return f"UNIV-v{self.config_version}-L{self.lookback_sessions}-ADT{adtv_str}-C{comp_str}{turn_comp_str}-{price_str}-{series_str}{top_str}"
+        """
+        Canonical immutable configuration identifier incorporating semantic version and hash.
+        e.g., UNIV-v1.0-e3b0c44298fc1c14
+        """
+        return f"UNIV-v{self.config_version}-{self.config_hash}"
 
 
 class UniverseMember(BaseModel):

@@ -39,6 +39,7 @@ class PointInTimeUniverseService:
         as_of_date: datetime.date,
         lookback_sessions: int,
         session: Session,
+        enforce_full_lookback: bool = True,
     ) -> List[datetime.date]:
         """
         Retrieves the exact trailing N completed market trading sessions
@@ -55,8 +56,13 @@ class PointInTimeUniverseService:
             .limit(lookback_sessions)
         )
         dates = session.execute(query).scalars().all()
-        # Return in ascending chronological order
-        return sorted(dates)
+        sorted_dates = sorted(dates)
+        if enforce_full_lookback and len(sorted_dates) < lookback_sessions:
+            raise ValueError(
+                f"Insufficient completed trading sessions on or before {as_of_date}: "
+                f"found {len(sorted_dates)}, required {lookback_sessions}."
+            )
+        return sorted_dates
 
     def build_universe(
         self,
@@ -72,12 +78,38 @@ class PointInTimeUniverseService:
         db_cm = get_db(session or self._external_db)
 
         with db_cm as db:
+            # 0. Validate as_of_date against coverage bounds and trading calendar
+            if as_of_date > cfg.data_coverage_end:
+                raise ValueError(
+                    f"Requested as_of_date {as_of_date} exceeds data coverage boundary {cfg.data_coverage_end}."
+                )
+            if as_of_date < cfg.data_coverage_start:
+                raise ValueError(
+                    f"Requested as_of_date {as_of_date} is prior to data coverage start {cfg.data_coverage_start}."
+                )
+
+            cal_max = db.execute(select(func.max(TradingCalendar.trade_date))).scalar()
+            if cal_max is not None and as_of_date > cal_max:
+                raise ValueError(
+                    f"Requested as_of_date {as_of_date} is beyond available trading calendar end {cal_max}."
+                )
+
             # 1. Determine exact trading session window
-            sessions = self.get_completed_trading_sessions(as_of_date, cfg.lookback_sessions, db)
+            sessions = self.get_completed_trading_sessions(
+                as_of_date,
+                cfg.lookback_sessions,
+                db,
+                enforce_full_lookback=not cfg.allow_partial_lookback,
+            )
             if not sessions:
                 raise ValueError(f"No completed trading sessions found on or before {as_of_date}")
 
             actual_lookback_count = len(sessions)
+            if not cfg.allow_partial_lookback and actual_lookback_count != cfg.lookback_sessions:
+                raise ValueError(
+                    f"Incomplete lookback window for {as_of_date}: found {actual_lookback_count} sessions, "
+                    f"exactly {cfg.lookback_sessions} required (partial lookback not allowed)."
+                )
             start_date = sessions[0]
             end_date = sessions[-1]
 
@@ -164,7 +196,33 @@ class PointInTimeUniverseService:
                 r["instrument_id"]: dict(r) for r in trade_rows
             }
 
-            # Resolve PIT identity deterministically backed by trade evidence or latest valid_from
+            # Query trade evidence per series in the lookback window up to as_of_date
+            series_trades_sql = text("""
+                SELECT
+                    instrument_id,
+                    series,
+                    max(trade_date) as latest_trade_date
+                FROM daily_prices_raw
+                WHERE trade_date >= :start_date AND trade_date <= :end_date
+                  AND series = ANY(:series_list)
+                GROUP BY instrument_id, series
+            """)
+            st_rows = db.execute(
+                series_trades_sql,
+                {
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "series_list": series_list,
+                },
+            ).mappings().all()
+
+            series_latest_trade: Dict[Tuple[str, str], datetime.date] = {
+                (r["instrument_id"], r["series"]): r["latest_trade_date"]
+                for r in st_rows
+            }
+
+            # Resolve PIT identity deterministically backed by contemporaneous trade evidence
+            # within record validity interval or source-backed interval evidence (valid_from DESC)
             pit_symbols: Dict[str, Dict[str, Any]] = {}
             ambiguous_instruments: Set[str] = set()
 
@@ -173,24 +231,44 @@ class PointInTimeUniverseService:
                     pit_symbols[iid] = records[0]
                 else:
                     # Multiple valid records exist on as_of_date (e.g. overlapping EQ and BE intervals).
-                    # Check exchange trade evidence from the lookback window.
-                    t_info = trade_stats.get(iid)
+                    max_vf = max(r["valid_from"] for r in records)
+
+                    # Contemporaneous trade evidence must fall within the record's own validity interval
+                    # and must not be strictly older than the newest transition boundary (max_vf).
+                    candidates_with_trade = []
+                    for rec in records:
+                        s = rec["series"]
+                        latest_td = series_latest_trade.get((iid, s))
+                        vt = rec["valid_to"]
+                        eff_end = min(as_of_date, vt) if vt is not None else as_of_date
+                        if (
+                            latest_td is not None
+                            and rec["valid_from"] <= latest_td <= eff_end
+                            and latest_td >= max_vf
+                        ):
+                            candidates_with_trade.append((rec, latest_td))
+
                     chosen = None
-                    if t_info and t_info.get("latest_series"):
-                        # Match with the actual traded series on the exchange
-                        for rec in records:
-                            if rec["series"] == t_info["latest_series"]:
-                                chosen = rec
-                                break
+                    if candidates_with_trade:
+                        # Sort by latest_trade_date desc, then valid_from desc
+                        candidates_with_trade.sort(key=lambda x: (x[1], x[0]["valid_from"]), reverse=True)
+                        top_td = candidates_with_trade[0][1]
+                        top_tied = [c for c in candidates_with_trade if c[1] == top_td]
+                        if len(top_tied) == 1:
+                            chosen = top_tied[0][0]
+                        else:
+                            # Conflicting records traded on the exact same latest date in different series
+                            ambiguous_instruments.add(iid)
+                            chosen = top_tied[0][0]
 
                     if chosen is None:
-                        # Fallback to the most recent effective valid_from date
-                        max_vf = records[0]["valid_from"]
+                        # No contemporaneous trade evidence on or after max_vf.
+                        # Fallback to source-backed historical interval evidence (latest valid_from).
                         top_records = [r for r in records if r["valid_from"] == max_vf]
                         if len(top_records) == 1:
                             chosen = top_records[0]
                         else:
-                            # Conflicting records with identical valid_from and no trading evidence
+                            # Conflicting records with identical valid_from and no trade evidence
                             ambiguous_instruments.add(iid)
                             chosen = top_records[0]
 
@@ -342,8 +420,8 @@ class PointInTimeUniverseService:
                     m.rank = rank_idx
                     final_eligible.append(m)
 
-            # Deterministic snapshot ID
-            snap_id = f"SNAP-{as_of_date.isoformat()}-{cfg.config_identifier}"
+            # Deterministic snapshot ID based on date and canonical config hash
+            snap_id = f"SNAP-{as_of_date.isoformat()}-{cfg.config_hash}"
 
             snapshot = UniverseSnapshot(
                 snapshot_id=snap_id,
@@ -374,7 +452,8 @@ class PointInTimeUniverseService:
     def _persist_snapshot_record(self, snapshot: UniverseSnapshot, session: Session) -> None:
         """
         Stores snapshot and member records in PostgreSQL with transactional idempotency.
-        Enforces raw_data_version check to prevent silent overwrites across differing data versions.
+        Enforces immutable coexistence across distinct configurations and raw data versions.
+        Does not delete existing snapshots.
         """
         existing = session.execute(
             select(UniverseSnapshotRecord).where(
@@ -385,14 +464,8 @@ class PointInTimeUniverseService:
         ).scalars().first()
 
         if existing is not None:
-            if existing.raw_data_version != snapshot.raw_data_version:
-                raise ValueError(
-                    f"Cannot overwrite snapshot for date {snapshot.as_of_date} and config {snapshot.config_identifier}: "
-                    f"existing raw_data_version='{existing.raw_data_version}' differs from "
-                    f"new raw_data_version='{snapshot.raw_data_version}'."
-                )
-            session.delete(existing)
-            session.flush()
+            # Identical calculation inputs snapshot already exists; return idempotently
+            return
 
         cfg = snapshot.config
         snap_rec = UniverseSnapshotRecord(

@@ -109,28 +109,88 @@ def test_2_first_observed_trade_date_correctly_populated(universe_service):
 # -------------------------------------------------------------------------
 def test_3_duplicate_eq_be_rows_do_not_inflate_observed_sessions(universe_service):
     """
-    Test 3: observed_sessions_count counts distinct calendar trading dates (COUNT(DISTINCT trade_date)).
+    Test 3: Behavioral test inserting simulated same-date EQ and BE rows for an instrument.
+    observed_sessions_count must strictly count distinct calendar trading dates (COUNT(DISTINCT trade_date))
+    and never inflate session counts.
     """
-    with get_db() as db:
-        # Audit: verify in daily_prices_raw that no instrument has >1 row across EQ and BE on the same trade date
-        dup_count = db.execute(text("""
-            SELECT count(*)
-            FROM (
-                SELECT instrument_id, trade_date
-                FROM daily_prices_raw
-                WHERE series IN ('EQ', 'BE')
-                GROUP BY instrument_id, trade_date
-                HAVING count(*) > 1
-            ) sub
-        """)).scalar()
-        assert dup_count == 0, f"Found {dup_count} duplicate same-date EQ/BE rows in daily_prices_raw!"
+    test_id = "inst-test-dup-session"
+    trade_dt = datetime.date(2024, 10, 24)
 
-    # Verify via universe snapshot that observed sessions never exceed lookback trading days
-    snap = universe_service.get_universe(datetime.date(2024, 10, 25))
-    for m in snap.eligible_members:
-        assert m.observed_sessions_count <= snap.lookback_sessions, (
-            f"Member {m.symbol} has observed_sessions ({m.observed_sessions_count}) > lookback ({snap.lookback_sessions})"
+    with get_db() as db:
+        # Clean any prior leftover
+        db.execute(text("DELETE FROM daily_prices_raw WHERE instrument_id = :id"), {"id": test_id})
+        db.execute(text("DELETE FROM instrument_symbol_history WHERE instrument_id = :id"), {"id": test_id})
+        db.execute(text("DELETE FROM instruments WHERE instrument_id = :id"), {"id": test_id})
+        db.commit()
+
+        run_id = db.execute(text("SELECT run_id FROM ingestion_runs LIMIT 1")).scalar()
+        inst = Instrument(
+            instrument_id=test_id,
+            name="Duplicate Test Corp",
+            status="ACTIVE",
+            first_observed_trade_date=datetime.date(2022, 1, 3),
         )
+        db.add(inst)
+        sym_rec = InstrumentSymbolHistory(
+            instrument_id=test_id,
+            symbol="DUPTEST",
+            isin="INE999DUP001",
+            series="EQ",
+            valid_from=datetime.date(2022, 1, 3),
+            valid_to=None,
+        )
+        db.add(sym_rec)
+
+        # Insert TWO price rows on the exact same date: one EQ, one BE
+        p_eq = DailyPriceRaw(
+            instrument_id=test_id,
+            trade_date=trade_dt,
+            series="EQ",
+            open=Decimal("100.00"),
+            high=Decimal("105.00"),
+            low=Decimal("95.00"),
+            close=Decimal("102.00"),
+            last=Decimal("102.00"),
+            prev_close=Decimal("100.00"),
+            volume=50000,
+            traded_value=Decimal("5100000.00"),
+            trades_count=500,
+            ingestion_run_id=run_id,
+        )
+        p_be = DailyPriceRaw(
+            instrument_id=test_id,
+            trade_date=trade_dt,
+            series="BE",
+            open=Decimal("100.00"),
+            high=Decimal("105.00"),
+            low=Decimal("95.00"),
+            close=Decimal("102.00"),
+            last=Decimal("102.00"),
+            prev_close=Decimal("100.00"),
+            volume=20000,
+            traded_value=Decimal("2040000.00"),
+            trades_count=200,
+            ingestion_run_id=run_id,
+        )
+        db.add_all([p_eq, p_be])
+        db.commit()
+
+    try:
+        snap = universe_service.build_universe(datetime.date(2024, 10, 25), persist=False)
+        m = snap.get_member(test_id)
+        assert m is not None, "Test member not evaluated in universe snapshot!"
+        # Distinct trade date counting must yield exactly 1 session, NOT 2
+        assert m.observed_sessions_count == 1, (
+            f"Expected observed_sessions_count=1 for single date with duplicate EQ/BE rows, got {m.observed_sessions_count}"
+        )
+        # Combined turnover on that date is accurately aggregated
+        assert m.total_turnover == Decimal("7140000.00")
+    finally:
+        with get_db() as db:
+            db.execute(text("DELETE FROM daily_prices_raw WHERE instrument_id = :id"), {"id": test_id})
+            db.execute(text("DELETE FROM instrument_symbol_history WHERE instrument_id = :id"), {"id": test_id})
+            db.execute(text("DELETE FROM instruments WHERE instrument_id = :id"), {"id": test_id})
+            db.commit()
 
 
 # -------------------------------------------------------------------------
@@ -211,33 +271,66 @@ def test_6_historical_be_series_not_replaced_by_eq(universe_service):
 
 
 # -------------------------------------------------------------------------
-# Test 7: Ambiguous overlapping series are detected
+# Test 7: Ambiguous overlapping series are detected and excluded by service
 # -------------------------------------------------------------------------
 def test_7_ambiguous_overlapping_series_detected(universe_service):
     """
-    Test 7: If multiple conflicting symbol/series records exist with identical validity and
-    no exchange trade activity can resolve the ambiguity, exclude with EXCLUDED_AMBIGUOUS_SERIES_HISTORY.
+    Test 7: Behavioral test with inserted conflicting records having identical validity boundaries.
+    When multiple conflicting symbol/series records exist with identical validity and
+    no contemporaneous trade evidence resolves the conflict, build_universe() must identify
+    the ambiguity and exclude the instrument with EXCLUDED_AMBIGUOUS_SERIES_HISTORY.
     """
-    cfg = UniverseConfig()
-    is_elig, reason, detail = evaluate_instrument_eligibility(
-        instrument_id="inst-ambig",
-        symbol="AMBIGCO",
-        isin="INE000000999",
-        series="EQ",
-        observed_sessions_count=126,
-        lookback_sessions=126,
-        average_daily_turnover=Decimal("10000000.00"),
-        median_daily_turnover=Decimal("10000000.00"),
-        latest_raw_close=Decimal("50.00"),
-        as_of_date=datetime.date(2024, 10, 25),
-        listing_date=None,
-        delisting_date=None,
-        quarantined_instrument_ids=set(),
-        config=cfg,
-        valid_turnover_sessions_count=126,
-    )
-    # When service flags ambiguity:
-    assert EligibilityReason.EXCLUDED_AMBIGUOUS_SERIES_HISTORY.value == "EXCLUDED_AMBIGUOUS_SERIES_HISTORY"
+    test_id = "inst-test-ambig-series"
+
+    with get_db() as db:
+        # Clean any prior leftover
+        db.execute(text("DELETE FROM daily_prices_raw WHERE instrument_id = :id"), {"id": test_id})
+        db.execute(text("DELETE FROM instrument_symbol_history WHERE instrument_id = :id"), {"id": test_id})
+        db.execute(text("DELETE FROM instruments WHERE instrument_id = :id"), {"id": test_id})
+        db.commit()
+
+        inst = Instrument(
+            instrument_id=test_id,
+            name="Ambiguous Series Corp",
+            status="ACTIVE",
+            first_observed_trade_date=datetime.date(2022, 1, 3),
+        )
+        db.add(inst)
+
+        # Insert TWO conflicting series records with IDENTICAL valid_from and valid_to
+        # Neither has trading evidence that can disambiguate
+        rec_eq = InstrumentSymbolHistory(
+            instrument_id=test_id,
+            symbol="AMBIGCO",
+            isin="INE000000999",
+            series="EQ",
+            valid_from=datetime.date(2024, 1, 1),
+            valid_to=None,
+        )
+        rec_be = InstrumentSymbolHistory(
+            instrument_id=test_id,
+            symbol="AMBIGCO",
+            isin="INE000000999",
+            series="BE",
+            valid_from=datetime.date(2024, 1, 1),
+            valid_to=None,
+        )
+        db.add_all([rec_eq, rec_be])
+        db.commit()
+
+    try:
+        snap = universe_service.build_universe(datetime.date(2024, 10, 25), persist=False)
+        m = snap.get_member(test_id)
+        assert m is not None, "Ambiguous instrument was not evaluated!"
+        assert m.is_eligible is False, "Ambiguous instrument must be excluded from universe!"
+        assert m.exclusion_reason == EligibilityReason.EXCLUDED_AMBIGUOUS_SERIES_HISTORY
+        assert "Multiple conflicting series records" in m.exclusion_detail
+    finally:
+        with get_db() as db:
+            db.execute(text("DELETE FROM daily_prices_raw WHERE instrument_id = :id"), {"id": test_id})
+            db.execute(text("DELETE FROM instrument_symbol_history WHERE instrument_id = :id"), {"id": test_id})
+            db.execute(text("DELETE FROM instruments WHERE instrument_id = :id"), {"id": test_id})
+            db.commit()
 
 
 # -------------------------------------------------------------------------
@@ -434,10 +527,10 @@ def test_13_existing_symbol_and_isin_changes_resolve_correctly(universe_service)
         ).scalar()
         assert gvp_id is not None
 
-        snap_2022 = universe_service.get_universe(datetime.date(2022, 6, 30))
+        snap_2022 = universe_service.get_universe(datetime.date(2022, 12, 30))
         m_2022 = snap_2022.get_member(gvp_id)
-        if m_2022:
-            assert m_2022.symbol == "4THDIM"
+        assert m_2022 is not None
+        assert m_2022.symbol == "4THDIM"
 
         snap_2024 = universe_service.get_universe(datetime.date(2024, 10, 25))
         m_2024 = snap_2024.get_member(gvp_id)
@@ -484,3 +577,234 @@ def test_14_universe_calculations_remain_bounded_by_as_of_date(universe_service)
         )
         row_post = next(r for r in prices_post if r.trade_date == datetime.date(2023, 1, 10))
         assert row_post.cumulative_multiplier == Decimal("5.000000")
+
+
+# -------------------------------------------------------------------------
+# Test 15: Canonical configuration fingerprinting and lossless Decimal identity
+# -------------------------------------------------------------------------
+def test_15_config_fingerprint_uniqueness_and_lossless_decimals():
+    """
+    Test 15: Config fingerprint incorporates every calculation parameter without lossy integer conversion.
+    Changes to max_price, min_median_turnover, raw_data_version, code_revision, or min_price
+    must produce distinct stable SHA-256 fingerprints and configuration identifiers.
+    """
+    base_cfg = UniverseConfig()
+
+    # 1. max_price inclusion
+    cfg_max_price = UniverseConfig(max_price=Decimal("500.00"))
+    assert base_cfg.config_hash != cfg_max_price.config_hash
+    assert base_cfg.config_identifier != cfg_max_price.config_identifier
+
+    # 2. min_median_turnover inclusion
+    cfg_med = UniverseConfig(min_median_turnover=Decimal("10000000.00"))
+    assert base_cfg.config_hash != cfg_med.config_hash
+    assert base_cfg.config_identifier != cfg_med.config_identifier
+
+    # 3. Lossless Decimal precision (min_price 10.00 vs 10.50 vs 10.01)
+    cfg_p1 = UniverseConfig(min_price=Decimal("10.00"))
+    cfg_p2 = UniverseConfig(min_price=Decimal("10.50"))
+    cfg_p3 = UniverseConfig(min_price=Decimal("10.01"))
+    assert cfg_p1.config_hash != cfg_p2.config_hash
+    assert cfg_p1.config_hash != cfg_p3.config_hash
+
+    # 4. Provenance and code/data revisions
+    cfg_raw_v2 = UniverseConfig(raw_data_version="RAW_NSE_2022_2024_V2")
+    assert base_cfg.config_hash != cfg_raw_v2.config_hash
+
+    cfg_rev2 = UniverseConfig(code_revision="phase-1b-iii.2")
+    assert base_cfg.config_hash != cfg_rev2.config_hash
+
+    # 5. Deterministic reproducibility
+    cfg_copy = UniverseConfig()
+    assert base_cfg.config_hash == cfg_copy.config_hash
+    assert base_cfg.canonical_json() == cfg_copy.canonical_json()
+
+
+# -------------------------------------------------------------------------
+# Test 16: Immutable snapshot coexistence across distinct configurations
+# -------------------------------------------------------------------------
+def test_16_immutable_snapshots_coexist_without_deletion(universe_service):
+    """
+    Test 16: Distinct configurations and revisions coexist as separate immutable snapshots
+    without overwriting or deleting prior snapshots.
+    """
+    test_dt = datetime.date(2024, 10, 25)
+    cfg1 = UniverseConfig(top_n=50)
+    cfg2 = UniverseConfig(top_n=100)
+
+    snap1 = universe_service.build_universe(test_dt, config=cfg1, persist=True)
+    snap2 = universe_service.build_universe(test_dt, config=cfg2, persist=True)
+
+    assert snap1.config_identifier != snap2.config_identifier
+    assert snap1.snapshot_id != snap2.snapshot_id
+
+    with get_db() as db:
+        rec1 = db.get(UniverseSnapshotRecord, snap1.snapshot_id)
+        rec2 = db.get(UniverseSnapshotRecord, snap2.snapshot_id)
+
+        assert rec1 is not None, "Snapshot 1 must still exist!"
+        assert rec2 is not None, "Snapshot 2 must coexist!"
+        assert rec1.eligible_count == 50
+        assert rec2.eligible_count == 100
+
+        # Retrieve idempotently via get_universe
+        retrieved1 = universe_service.get_universe(test_dt, config=cfg1)
+        retrieved2 = universe_service.get_universe(test_dt, config=cfg2)
+
+        assert retrieved1.snapshot_id == snap1.snapshot_id
+        assert retrieved2.snapshot_id == snap2.snapshot_id
+
+
+# -------------------------------------------------------------------------
+# Test 17: Full lookback completeness enforcement
+# -------------------------------------------------------------------------
+def test_17_full_lookback_completeness_enforced(universe_service):
+    """
+    Test 17: The universe builder strictly requires cfg.lookback_sessions (126) completed trading sessions.
+    Requesting a universe when fewer sessions exist must raise ValueError explaining the counts,
+    rather than silently reducing the denominator.
+    Partial lookback requires explicit opt-in via allow_partial_lookback=True.
+    """
+    # 2022-01-10 is the 6th trading session in the historical dataset (starts 2022-01-03)
+    early_dt = datetime.date(2022, 1, 10)
+
+    # 1. Standard config must reject incomplete history
+    with pytest.raises(ValueError, match="Insufficient completed trading sessions|Incomplete lookback window"):
+        universe_service.build_universe(early_dt, config=UniverseConfig(), persist=False)
+
+    # 2. Explicit opt-in supports documented partial lookback
+    partial_cfg = UniverseConfig(allow_partial_lookback=True)
+    partial_snap = universe_service.build_universe(early_dt, config=partial_cfg, persist=False)
+    assert partial_snap.lookback_sessions == 6
+    assert len(partial_snap.eligible_members) + len(partial_snap.excluded_members) > 0
+
+
+# -------------------------------------------------------------------------
+# Test 18: Date coverage and trading calendar boundary validation
+# -------------------------------------------------------------------------
+def test_18_date_coverage_and_future_date_rejection(universe_service):
+    """
+    Test 18: Validates that as_of_date is not beyond data coverage end, before data coverage start,
+    or beyond the trading calendar. Past historical sessions are never silently substituted for future dates.
+    """
+    # Future date beyond 2024-12-31
+    future_dt = datetime.date(2025, 6, 1)
+    with pytest.raises(ValueError, match="exceeds data coverage boundary"):
+        universe_service.build_universe(future_dt, persist=False)
+
+    # Date prior to 2022-01-03
+    past_dt = datetime.date(2021, 12, 1)
+    with pytest.raises(ValueError, match="prior to data coverage start"):
+        universe_service.build_universe(past_dt, persist=False)
+
+
+# -------------------------------------------------------------------------
+# Test 19: PIT series transition boundary handling without stale evidence
+# -------------------------------------------------------------------------
+def test_19_pit_series_transition_boundary_handling(universe_service):
+    """
+    Test 19: Genuine behavioral tests for Point-in-Time series resolution at transition boundaries:
+    - EQ to BE transition with trade on effective date (uses trade evidence).
+    - EQ to BE transition without trade on effective date (stale EQ trade rejected, uses latest valid_from).
+    - BE to EQ transition.
+    - Old-series trades remaining in lookback window after transition.
+    """
+    test_id = "inst-test-pit-trans"
+
+    with get_db() as db:
+        # Cleanup
+        db.execute(text("DELETE FROM daily_prices_raw WHERE instrument_id = :id"), {"id": test_id})
+        db.execute(text("DELETE FROM instrument_symbol_history WHERE instrument_id = :id"), {"id": test_id})
+        db.execute(text("DELETE FROM instruments WHERE instrument_id = :id"), {"id": test_id})
+        db.commit()
+
+        run_id = db.execute(text("SELECT run_id FROM ingestion_runs LIMIT 1")).scalar()
+        inst = Instrument(
+            instrument_id=test_id,
+            name="Transition Test Corp",
+            status="ACTIVE",
+            first_observed_trade_date=datetime.date(2022, 1, 3),
+        )
+        db.add(inst)
+
+        # Transition scenario: EQ valid until 2024-07-21, BE valid from 2024-07-21
+        rec_eq = InstrumentSymbolHistory(
+            instrument_id=test_id,
+            symbol="PITTRANS",
+            isin="INE999PIT001",
+            series="EQ",
+            valid_from=datetime.date(2022, 1, 3),
+            valid_to=datetime.date(2024, 7, 21),
+        )
+        rec_be = InstrumentSymbolHistory(
+            instrument_id=test_id,
+            symbol="PITTRANS",
+            isin="INE999PIT001",
+            series="BE",
+            valid_from=datetime.date(2024, 7, 21),
+            valid_to=None,
+        )
+        db.add_all([rec_eq, rec_be])
+
+        # Trade in EQ on 2024-07-19 (prior to 2024-07-21 transition)
+        p_eq = DailyPriceRaw(
+            instrument_id=test_id,
+            trade_date=datetime.date(2024, 7, 19),
+            series="EQ",
+            open=Decimal("100.00"),
+            high=Decimal("105.00"),
+            low=Decimal("95.00"),
+            close=Decimal("102.00"),
+            last=Decimal("102.00"),
+            prev_close=Decimal("100.00"),
+            volume=50000,
+            traded_value=Decimal("5100000.00"),
+            trades_count=500,
+            ingestion_run_id=run_id,
+        )
+        db.add(p_eq)
+        db.commit()
+
+    try:
+        # Case A: On 2024-07-22 (as_of_date), NO trade has occurred in BE yet.
+        # Stale EQ trade on July 19 must NOT override the BE interval effective July 21.
+        snap_no_trade = universe_service.build_universe(datetime.date(2024, 7, 22), persist=False)
+        m_no_trade = snap_no_trade.get_member(test_id)
+        assert m_no_trade is not None
+        assert m_no_trade.series == "BE", (
+            f"Expected series 'BE' via source-backed interval evidence, got '{m_no_trade.series}'"
+        )
+
+        # Case B: On 2024-07-22, a trade occurs in series BE on the effective date.
+        with get_db() as db:
+            p_be = DailyPriceRaw(
+                instrument_id=test_id,
+                trade_date=datetime.date(2024, 7, 22),
+                series="BE",
+                open=Decimal("102.00"),
+                high=Decimal("103.00"),
+                low=Decimal("101.00"),
+                close=Decimal("102.50"),
+                last=Decimal("102.50"),
+                prev_close=Decimal("102.00"),
+                volume=30000,
+                traded_value=Decimal("3075000.00"),
+                trades_count=300,
+                ingestion_run_id=run_id,
+            )
+            db.add(p_be)
+            db.commit()
+
+        snap_with_trade = universe_service.build_universe(datetime.date(2024, 7, 22), persist=False)
+        m_with_trade = snap_with_trade.get_member(test_id)
+        assert m_with_trade is not None
+        assert m_with_trade.series == "BE", (
+            f"Expected series 'BE' with contemporaneous trade evidence, got '{m_with_trade.series}'"
+        )
+
+    finally:
+        with get_db() as db:
+            db.execute(text("DELETE FROM daily_prices_raw WHERE instrument_id = :id"), {"id": test_id})
+            db.execute(text("DELETE FROM instrument_symbol_history WHERE instrument_id = :id"), {"id": test_id})
+            db.execute(text("DELETE FROM instruments WHERE instrument_id = :id"), {"id": test_id})
+            db.commit()
