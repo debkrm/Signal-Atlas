@@ -13,7 +13,7 @@ from signal_atlas.db.models.ingestion import IngestionRun
 from signal_atlas.db.models.instruments import Instrument, InstrumentSymbolHistory
 from signal_atlas.db.models.prices import DailyPriceRaw
 from signal_atlas.db.models.quarantine import DailyPriceQuarantine
-from signal_atlas.universe.models import UniverseConfig
+from signal_atlas.universe.models import UniverseConfig, UniverseSnapshot
 from signal_atlas.universe.provenance import RawDataManifest, _canonical_value, _dirty_fingerprint, compute_raw_data_manifest
 from signal_atlas.universe.service import PointInTimeUniverseService
 
@@ -88,6 +88,7 @@ def test_manifest_is_deterministic_and_hashes_raw_row_content(db):
         (TradingCalendar, "holiday_name", "Exchange holiday"),
         (DailyPriceQuarantine, "validation_message", "changed"),
         (IngestionRun, "file_hash", "c" * 64),
+        (CorporateAction, "verification_status", "UNRESOLVED"),
     ],
 )
 def test_manifest_hashes_every_universe_input_table(db, model, attribute, new_value):
@@ -107,6 +108,13 @@ def test_manifest_binding_rejects_a_stale_caller_hash(db):
     config = UniverseConfig(raw_data_manifest_hash="0" * 64)
     with pytest.raises(ValueError, match="does not match"):
         PointInTimeUniverseService._bind_manifest(config, manifest)
+
+
+def test_public_build_rejects_an_injected_manifest():
+    with pytest.raises(TypeError, match="raw_manifest"):
+        PointInTimeUniverseService().build_universe(
+            datetime.date(2024, 1, 2), raw_manifest=RawDataManifest(manifest_fingerprint="0" * 64)
+        )
 
 
 def test_code_revision_dirty_fingerprint_includes_every_change_class():
@@ -158,6 +166,9 @@ def test_cache_hit_returns_current_manifest_metadata(monkeypatch):
         def __init__(self):
             self.calls = 0
 
+        def get_bind(self):
+            return SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
+
         def execute(self, _query):
             self.calls += 1
             return ScalarResult([snapshot_record] if self.calls == 1 else [])
@@ -165,8 +176,87 @@ def test_cache_hit_returns_current_manifest_metadata(monkeypatch):
     session = CacheSession()
     service = PointInTimeUniverseService()
     monkeypatch.setattr("signal_atlas.universe.service.compute_raw_data_manifest", lambda _: manifest)
-    monkeypatch.setattr(service, "build_universe", lambda *args, **kwargs: pytest.fail("cache hit rebuilt"))
+    monkeypatch.setattr(service, "_build_universe", lambda *args, **kwargs: pytest.fail("cache hit rebuilt"))
     snapshot = service.get_universe(datetime.date(2024, 1, 2), config=config, session=session)
     assert session.calls == 2
     assert snapshot.raw_data_manifest_hash == manifest.manifest_fingerprint
     assert snapshot.raw_data_manifest == manifest.canonical_dict()
+
+
+def test_first_get_persists_then_second_get_is_a_real_cache_hit(db, monkeypatch):
+    manifests = [RawDataManifest(manifest_fingerprint="b" * 64)]
+    service = PointInTimeUniverseService()
+    calls = []
+
+    def build(as_of_date, config, persist, session, raw_manifest):
+        calls.append((as_of_date, raw_manifest.manifest_fingerprint))
+        snapshot = UniverseSnapshot(
+            snapshot_id=f"persisted-{raw_manifest.manifest_fingerprint[:8]}-{config.code_revision}",
+            as_of_date=as_of_date, lookback_sessions=126,
+            lookback_start_date=datetime.date(2023, 7, 1), lookback_end_date=as_of_date,
+            config=config, config_identifier=config.config_identifier,
+            adjustment_version=config.adjustment_version, raw_data_version=config.raw_data_version,
+            raw_data_manifest_hash=raw_manifest.manifest_fingerprint,
+            raw_data_manifest=raw_manifest.canonical_dict(),
+            data_coverage_start=config.data_coverage_start, data_coverage_end=config.data_coverage_end,
+            code_revision=config.code_revision, total_instruments_evaluated=0,
+            eligible_count=0, excluded_count=0,
+        )
+        service._persist_snapshot_record(snapshot, session)
+        return snapshot
+
+    monkeypatch.setattr("signal_atlas.universe.service.compute_raw_data_manifest", lambda _: manifests[0])
+    monkeypatch.setattr(service, "_build_universe", build)
+    config = UniverseConfig(code_revision="revision")
+    first = service.get_universe(datetime.date(2024, 1, 2), config=config, session=db)
+    second = service.get_universe(datetime.date(2024, 1, 2), config=config, session=db)
+    assert len(calls) == 1
+    assert second.snapshot_id == first.snapshot_id
+
+    manifests[0] = RawDataManifest(manifest_fingerprint="c" * 64)
+    service.get_universe(datetime.date(2024, 1, 2), config=config, session=db)
+    service.get_universe(
+        datetime.date(2024, 1, 2),
+        config=config.model_copy(update={"code_revision": "revision-two"}),
+        session=db,
+    )
+    assert len(calls) == 3
+
+
+class _PostgresConnection:
+    def __init__(self, isolation_level):
+        self.isolation_level = isolation_level
+
+    def get_isolation_level(self):
+        return self.isolation_level
+
+
+class _PostgresSession:
+    def __init__(self, isolation_level, in_transaction):
+        self.connection_obj = _PostgresConnection(isolation_level)
+        self.started = in_transaction
+        self.execution_options = None
+
+    def get_bind(self):
+        return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    def in_transaction(self):
+        return self.started
+
+    def connection(self, execution_options=None):
+        self.execution_options = execution_options
+        return self.connection_obj
+
+
+def test_started_postgres_transaction_requires_repeatable_read():
+    session = _PostgresSession("READ COMMITTED", in_transaction=True)
+    with pytest.raises(RuntimeError, match="REPEATABLE READ"):
+        with PointInTimeUniverseService._consistent_snapshot_transaction(session):
+            pass
+
+
+def test_idle_postgres_session_establishes_repeatable_read_without_commit():
+    session = _PostgresSession("REPEATABLE READ", in_transaction=False)
+    with PointInTimeUniverseService._consistent_snapshot_transaction(session):
+        pass
+    assert session.execution_options == {"isolation_level": "REPEATABLE READ"}

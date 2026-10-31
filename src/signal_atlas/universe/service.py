@@ -1,4 +1,5 @@
 import datetime
+from contextlib import contextmanager, nullcontext
 from decimal import Decimal
 import json
 from pathlib import Path
@@ -53,6 +54,32 @@ class PointInTimeUniverseService:
             }
         )
 
+    @staticmethod
+    @contextmanager
+    def _consistent_snapshot_transaction(db: Session):
+        """Use one repeatable database snapshot for manifest, lookup, and build.
+
+        PostgreSQL sessions supplied by callers must either already be in a
+        REPEATABLE READ transaction or be unused so this method can establish
+        one. Caller-owned transactions are never committed here.
+        """
+        if db.get_bind().dialect.name == "postgresql":
+            if db.in_transaction():
+                isolation_level = db.connection().get_isolation_level().upper().replace("_", " ")
+                if isolation_level != "REPEATABLE READ":
+                    raise RuntimeError(
+                        "Universe construction requires a PostgreSQL REPEATABLE READ transaction; "
+                        "the supplied session already has an incompatible active transaction."
+                    )
+            else:
+                connection = db.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+                isolation_level = connection.get_isolation_level().upper().replace("_", " ")
+                if isolation_level != "REPEATABLE READ":
+                    raise RuntimeError(
+                        "Universe construction could not establish PostgreSQL REPEATABLE READ isolation."
+                    )
+        yield db
+
     def get_completed_trading_sessions(
         self,
         as_of_date: datetime.date,
@@ -89,19 +116,39 @@ class PointInTimeUniverseService:
         config: Optional[UniverseConfig] = None,
         persist: bool = True,
         session: Optional[Session] = None,
-        raw_manifest: Optional[RawDataManifest] = None,
     ) -> UniverseSnapshot:
         """
         Computes the complete, deterministic Point-in-Time Universe for as_of_date.
         """
         cfg = config or UniverseConfig()
-        db_cm = get_db(session or self._external_db)
+        active_session = session if session is not None else self._external_db
+        db_cm = get_db(active_session)
 
         with db_cm as db:
-            # -1. Bind the current manifest before deriving the effective configuration identity.
-            raw_manifest = raw_manifest or compute_raw_data_manifest(db)
-            cfg = self._bind_manifest(cfg, raw_manifest)
+            with self._consistent_snapshot_transaction(db):
+                raw_manifest = compute_raw_data_manifest(db)
+                return self._build_universe(
+                    as_of_date,
+                    config=cfg,
+                    persist=persist,
+                    session=db,
+                    raw_manifest=raw_manifest,
+                )
 
+    def _build_universe(
+        self,
+        as_of_date: datetime.date,
+        config: UniverseConfig,
+        persist: bool,
+        session: Session,
+        raw_manifest: RawDataManifest,
+    ) -> UniverseSnapshot:
+        """Build from a manifest verified in the caller's consistent transaction."""
+        cfg = self._bind_manifest(config, raw_manifest)
+        db = session
+
+        # Preserve the original calculation block's scope without opening a new transaction.
+        with nullcontext():
             # 0. Validate as_of_date against coverage bounds and trading calendar
             if as_of_date > cfg.data_coverage_end:
                 raise ValueError(
@@ -546,7 +593,7 @@ class PointInTimeUniverseService:
             for m in all_members
         ]
         session.add_all(member_records)
-        session.commit()
+        session.flush()
 
     def get_universe(
         self,
@@ -559,9 +606,10 @@ class PointInTimeUniverseService:
         or dynamically computes and persists it.
         """
         cfg = config or UniverseConfig()
-        db_cm = get_db(session or self._external_db)
+        active_session = session if session is not None else self._external_db
+        db_cm = get_db(active_session)
 
-        with db_cm as db:
+        with db_cm as db, self._consistent_snapshot_transaction(db):
             raw_manifest = compute_raw_data_manifest(db)
             cfg = self._bind_manifest(cfg, raw_manifest)
             snap_rec = db.execute(
@@ -581,15 +629,11 @@ class PointInTimeUniverseService:
                     .where(UniverseMemberRecord.snapshot_id == snap_rec.snapshot_id)
                     .order_by(UniverseMemberRecord.rank.nullslast(), UniverseMemberRecord.symbol)
                 ).scalars().all()
-
                 eligible_members = []
                 excluded_members = []
                 for mr in members_recs:
-                    mem = UniverseMember(
-                        instrument_id=mr.instrument_id,
-                        symbol=mr.symbol,
-                        isin=mr.isin,
-                        series=mr.series,
+                    member = UniverseMember(
+                        instrument_id=mr.instrument_id, symbol=mr.symbol, isin=mr.isin, series=mr.series,
                         observed_sessions_count=mr.observed_sessions_count,
                         missing_sessions_count=mr.missing_sessions_count,
                         trading_completeness=Decimal(str(mr.trading_completeness)),
@@ -599,49 +643,33 @@ class PointInTimeUniverseService:
                         total_turnover=Decimal(str(mr.total_turnover)) if mr.total_turnover is not None else None,
                         average_daily_turnover=Decimal(str(mr.average_daily_turnover)) if mr.average_daily_turnover is not None else None,
                         median_daily_turnover=Decimal(str(mr.median_daily_turnover)) if mr.median_daily_turnover is not None else None,
-                        null_turnover_count=mr.null_turnover_count,
-                        zero_turnover_count=mr.zero_turnover_count,
+                        null_turnover_count=mr.null_turnover_count, zero_turnover_count=mr.zero_turnover_count,
                         positive_turnover_count=mr.positive_turnover_count,
                         latest_raw_close=Decimal(str(mr.latest_raw_close)) if mr.latest_raw_close is not None else None,
-                        is_eligible=mr.is_eligible,
-                        rank=mr.rank,
+                        is_eligible=mr.is_eligible, rank=mr.rank,
                         exclusion_reason=EligibilityReason(mr.exclusion_reason) if mr.exclusion_reason else None,
                         exclusion_detail=mr.exclusion_detail,
                     )
-                    if mr.is_eligible:
-                        eligible_members.append(mem)
-                    else:
-                        excluded_members.append(mem)
-
+                    (eligible_members if mr.is_eligible else excluded_members).append(member)
                 return UniverseSnapshot(
-                    snapshot_id=snap_rec.snapshot_id,
-                    as_of_date=snap_rec.as_of_date,
+                    snapshot_id=snap_rec.snapshot_id, as_of_date=snap_rec.as_of_date,
                     lookback_sessions=snap_rec.lookback_sessions,
                     lookback_start_date=snap_rec.lookback_start_date,
-                    lookback_end_date=snap_rec.lookback_end_date,
-                    config=cfg,
+                    lookback_end_date=snap_rec.lookback_end_date, config=cfg,
                     config_identifier=snap_rec.config_identifier,
                     adjustment_version=snap_rec.adjustment_version,
                     raw_data_version=snap_rec.raw_data_version,
                     raw_data_manifest_hash=raw_manifest.manifest_fingerprint,
                     raw_data_manifest=raw_manifest.canonical_dict(),
                     data_coverage_start=snap_rec.data_coverage_start,
-                    data_coverage_end=snap_rec.data_coverage_end,
-                    code_revision=snap_rec.code_revision,
+                    data_coverage_end=snap_rec.data_coverage_end, code_revision=snap_rec.code_revision,
                     total_instruments_evaluated=snap_rec.total_instruments_evaluated,
-                    eligible_count=snap_rec.eligible_count,
-                    excluded_count=snap_rec.excluded_count,
-                    eligible_members=eligible_members,
-                    excluded_members=excluded_members,
+                    eligible_count=snap_rec.eligible_count, excluded_count=snap_rec.excluded_count,
+                    eligible_members=eligible_members, excluded_members=excluded_members,
                 )
 
-            # If not yet persisted, compute and persist
-            return self.build_universe(
-                as_of_date,
-                config=cfg,
-                persist=True,
-                session=db,
-                raw_manifest=raw_manifest,
+            return self._build_universe(
+                as_of_date, config=cfg, persist=True, session=db, raw_manifest=raw_manifest
             )
 
     def get_universe_adjusted_prices(
