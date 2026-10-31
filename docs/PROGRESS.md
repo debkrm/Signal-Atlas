@@ -1,10 +1,11 @@
 # Signal Atlas Progress
 
 ## Current phase
-Phase 1B-iii.1.1 — Point-in-Time Universe Isolation and Exact Provenance Closure
+Phase 2 — Indicators, Trend-Pullback Swing Strategy, and Realistic Backtesting Engine
 
 ## Status
-Complete (Awaiting Human Review and Merge of PR #1 before Phase 2)
+Complete (Awaiting Human Review)
+
 
 ## Completed
 - [x] Initialized Git repository and linked to remote `https://github.com/debkrm/Signal-Atlas.git`.
@@ -482,11 +483,33 @@ Complete (Awaiting Human Review and Merge of PR #1 before Phase 2)
 - GitHub Actions CI workflow verified: 93 passed, 65 skipped on PR #1 head.
 - Code cleanly compiled with zero whitespace or line-ending errors.
 
+- [x] **Completed Phase 2 (Indicators, Trend-Pullback Swing Strategy, and Realistic Backtest Engine)**:
+  1. **Technical Feature Engine (`src/signal_atlas/features/`)**:
+     - `models.py`: Strongly typed `TechnicalFeatures` domain model.
+     - `indicators.py`: Pure mathematical indicators (EMA 20, EMA 50, Wilder's smoothed RSI 14, MACD [12, 26, 9], Wilder's ATR 14, 20-day Volume/Traded Value, Relative Strength vs NIFTY 50, Weekly Trend derived from daily records).
+     - `engine.py`: `TechnicalFeatureEngine` calculating point-in-time features strictly using history $\le \text{as\_of\_date}$, guaranteeing zero lookahead bias.
+     - `tests/unit/test_indicators.py`: 10/10 unit tests passing.
+     - `tests/integration/test_technical_features.py`: PostgreSQL integration test verifying PIT isolation.
+  2. **Trend-Pullback Swing Strategy (`src/signal_atlas/strategy/`)**:
+     - `models.py`: Domain models (`MarketContext`, `SignalState`, `StrategyParameters`, `TrendPullbackParameters`, `StrategyCandidate`).
+     - `base.py`: Pure abstract `Strategy` contract (zero I/O, deterministic evaluation, stable ID/version, next-session execution validation).
+     - `trend_pullback.py`: `TrendPullbackStrategy` implementing market regime gate, medium-term trend alignment (EMA 20 > EMA 50, Price > EMA 50), constructive pullback proximity ($\le 4\%$ of EMA 20), RSI momentum reset zone (40–60), weekly trend alignment, dynamic ATR-based invalidation/target with $\ge 1.5$ reward-to-risk, and $t+1$ opening execution gate (`evaluate_next_session_entry`).
+     - `tests/unit/test_trend_pullback_strategy.py`: 10/10 unit tests passing.
+  3. **Realistic Backtest Simulation Engine (`src/signal_atlas/backtest/`)**:
+     - `costs.py`: `TransactionCostModel` simulating Indian delivery equity charges: STT (0.10% buy & sell), NSE exchange turnover fees (0.00297%), SEBI turnover charges (₹10/crore), state stamp duty (0.015% buy only), GST (18% on fees), brokerage (₹20/order or 0.03%), and configurable execution slippage (5 bps default).
+     - `models.py`: Domain models (`BacktestConfig`, `ExitReason`, `PositionRecord`, `EquitySnapshot`, `BacktestMetrics`, `BaselineComparison`, `BacktestResult`).
+     - `simulator.py`: `BacktestSimulator` implementing:
+       - Next-session ($t+1$) opening execution with opening gap bounds.
+       - Gap below stop: executed at Open, never assuming unfillable stop price.
+       - Conservative stop-first rule: when daily bar touches both stop and target, assumes stop first.
+       - Max holding duration liquidation at close.
+       - Realistic position sizing adhering to risk budget, capital cap (20%), and 20-day ADTV participation cap.
+       - Benchmarking comparisons against Buy & Hold and Random Entry baseline.
+     - `tests/unit/test_backtest.py`: 10/10 unit tests passing.
+     - `tests/integration/test_backtest_simulation.py`: PostgreSQL integration test passing.
+
 ### Blockers
 - None.
 
 ### Next smallest task
-- Human review and merge of PR #1 (`phase-1b-iii-1/universe-integrity-closure`). Do not start Phase 2 until PR #1 is merged and approved by human owner.
-
-
-
+- Human review of Phase 2 deliverables on branch `phase-2/indicators-and-strategy` and subsequent merge into `main` before starting Phase 3 (Risk engine and portfolio execution rules).
