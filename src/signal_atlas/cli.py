@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.table import Table
 
 from signal_atlas.ingestion.pipeline import IngestionPipeline, PipelineError
+from signal_atlas.research.service import ResearchService, SUPPORTED_STRATEGIES
 
 logging.basicConfig(
     level=logging.INFO,
@@ -234,6 +235,226 @@ def _render_batch_summary(results: list[dict]) -> None:
     console.print(
         f"[bold]Totals:[/bold] {', '.join(summary_parts)} | [cyan]{total_rows:,} total records[/cyan]\n"
     )
+
+
+@app.command("market-status")
+def market_status_command(
+    date_str: Optional[str] = typer.Option(
+        None,
+        "--date",
+        "-d",
+        help="Market date to evaluate in YYYY-MM-DD format (defaults to latest available)",
+    ),
+) -> None:
+    """
+    Check data freshness, market regime (NIFTY 50 trend), and system risk parameters.
+    """
+    trade_date = None
+    if date_str:
+        try:
+            trade_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            console.print(f"[red]Error:[/red] Invalid date format '{date_str}'. Expected YYYY-MM-DD.", style="bold")
+            raise typer.Exit(code=1)
+
+    svc = ResearchService()
+    res = svc.get_market_status(as_of_date=trade_date)
+    r = res["result"]
+
+    table = Table(title=f"Market Status — As Of {res['as_of']}", show_header=True, header_style="bold magenta")
+    table.add_column("Property", style="dim", width=24)
+    table.add_column("Value", style="bold")
+
+    regime_color = "green" if r["is_bullish"] else "yellow"
+    status_color = "green" if res["data_status"] == "FRESH" else "yellow"
+
+    table.add_row("Data Freshness", f"[{status_color}]{res['data_status']}[/{status_color}]")
+    table.add_row("Market Regime", f"[{regime_color}]{r['market_regime']}[/{regime_color}]")
+    table.add_row("Benchmark Symbol", str(r.get("benchmark_symbol", "N/A")))
+    table.add_row("Benchmark Close", str(r.get("benchmark_close", "N/A")))
+    table.add_row("Latest Ingested Date", str(r.get("latest_ingested_date", "N/A")))
+
+    for k, v in r.get("risk_parameters", {}).items():
+        table.add_row(f"Risk Param: {k}", str(v))
+
+    console.print(table)
+    if res["warnings"]:
+        for w in res["warnings"]:
+            console.print(f"[yellow]Notice:[/yellow] {w}")
+
+
+@app.command("screen")
+def screen_command(
+    strategy: str = typer.Option("trend_pullback", "--strategy", "-s", help="Strategy identifier"),
+    date_str: Optional[str] = typer.Option(None, "--date", "-d", help="Market date in YYYY-MM-DD format"),
+    top_n: int = typer.Option(15, "--top", "-n", help="Maximum setups to display"),
+) -> None:
+    """
+    Screen securities for swing trade setups matching a strategy and passing all risk gates.
+    """
+    trade_date = None
+    if date_str:
+        try:
+            trade_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            console.print(f"[red]Error:[/red] Invalid date format '{date_str}'. Expected YYYY-MM-DD.", style="bold")
+            raise typer.Exit(code=1)
+
+    svc = ResearchService()
+    try:
+        res = svc.screen(strategy_id=strategy, as_of_date=trade_date, top_n=top_n)
+    except Exception as e:
+        console.print(f"[bold red]Screen Failed:[/bold red] {e}")
+        raise typer.Exit(code=1)
+
+    r = res["result"]
+    setups = r.get("setups", [])
+
+    console.print(
+        f"\n[cyan]Signal Atlas Screener[/cyan] — Strategy: [bold]{strategy}[/bold] | As Of: [bold]{res['as_of']}[/bold]"
+    )
+    console.print(
+        f"Screened Universe: {r.get('screened_universe_size', 0)} | Approved Candidates: [bold green]{r.get('approved_count', 0)}[/bold green]\n"
+    )
+
+    if not setups:
+        console.print("[yellow]No approved trade setups found for the selected date and strategy.[/yellow]\n")
+        return
+
+    table = Table(title=f"Top Approved Setups (Ranked by Reward/Risk)", show_header=True, header_style="bold magenta")
+    table.add_column("Symbol", style="bold cyan", width=12)
+    table.add_column("State", width=8)
+    table.add_column("Entry Ref", justify="right", width=11)
+    table.add_column("Stop Loss", justify="right", width=11)
+    table.add_column("Target", justify="right", width=11)
+    table.add_column("R:R", justify="right", width=7)
+    table.add_column("Quantity", justify="right", width=9)
+    table.add_column("Capital (₹)", justify="right", width=12)
+    table.add_column("Constraint", width=14)
+
+    for s in setups:
+        table.add_row(
+            s["symbol"],
+            "[green]BUY[/green]",
+            f"₹{Decimal(str(s['entry_price'])):,.2f}",
+            f"₹{Decimal(str(s['stop_loss'])):,.2f}",
+            f"₹{Decimal(str(s['target_price'])):,.2f}",
+            f"{Decimal(str(s['reward_to_risk'])):.2f}",
+            f"{s['allocated_quantity']:,}",
+            f"₹{Decimal(str(s['planned_capital_usage'])):,.2f}",
+            s.get("limiting_factor", "-"),
+        )
+
+    console.print(table)
+    console.print()
+
+
+@app.command("setup")
+def setup_command(
+    symbol: str = typer.Argument(..., help="NSE stock symbol (e.g. RELIANCE)"),
+    date_str: Optional[str] = typer.Option(None, "--date", "-d", help="Market date in YYYY-MM-DD format"),
+) -> None:
+    """
+    Evaluate full trade setup, position sizing, and risk audit for a specific stock.
+    """
+    trade_date = None
+    if date_str:
+        try:
+            trade_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            console.print(f"[red]Error:[/red] Invalid date format '{date_str}'. Expected YYYY-MM-DD.", style="bold")
+            raise typer.Exit(code=1)
+
+    svc = ResearchService()
+    res = svc.get_setup(symbol=symbol, as_of_date=trade_date)
+    s = res["result"]
+
+    console.print(f"\n[cyan]Trade Setup Audit[/cyan] — Symbol: [bold]{symbol.upper()}[/bold] | As Of: [bold]{res['as_of']}[/bold]\n")
+
+    if not s.get("is_approved"):
+        console.print(f"[bold red]Signal State: {s.get('signal_state', 'AVOID')}[/bold red]")
+        console.print(f"Primary Reason: [yellow]{s.get('primary_rejection_reason', 'Did not qualify')}[/yellow]")
+        if s.get("failed_checks"):
+            console.print("\n[bold]Failed Gates:[/bold]")
+            for fc in s["failed_checks"]:
+                console.print(f"  • [red]✗[/red] {fc['check_name']}: {fc['explanation']}")
+        console.print()
+        return
+
+    table = Table(title="Setup Geometry & Sizing", show_header=True, header_style="bold magenta")
+    table.add_column("Parameter", style="dim", width=22)
+    table.add_column("Value", style="bold")
+
+    table.add_row("Signal State", "[bold green]BUY[/bold green]")
+    table.add_row("Strategy", f"{s.get('strategy_id')} ({s.get('strategy_version')})")
+    table.add_row("Reference Entry", f"₹{Decimal(str(s['entry_price'])):,.2f}")
+    table.add_row("Entry Zone", f"₹{Decimal(str(s['entry_zone_low'])):,.2f} – ₹{Decimal(str(s['entry_zone_high'])):,.2f}")
+    table.add_row("Stop Loss", f"₹{Decimal(str(s['stop_loss'])):,.2f}")
+    table.add_row("Target Price", f"₹{Decimal(str(s['target_price'])):,.2f}")
+    table.add_row("Reward-to-Risk", f"{Decimal(str(s['reward_to_risk'])):.2f}")
+    table.add_row("Allocated Quantity", f"{s['allocated_quantity']:,} shares")
+    table.add_row("Capital Allocation", f"₹{Decimal(str(s['planned_capital_usage'])):,.2f}")
+    table.add_row("Planned Risk", f"₹{Decimal(str(s['planned_risk_amount'])):,.2f} ({Decimal(str(s['planned_risk_pct'])):.2%})")
+    table.add_row("Binding Constraint", str(s.get("limiting_factor")))
+
+    console.print(table)
+
+    if s.get("passed_checks"):
+        console.print(f"\n[green]Passed Risk Checks:[/green] {len(s['passed_checks'])} gates verified")
+    if res.get("warnings"):
+        for w in res["warnings"]:
+            console.print(f"[yellow]Advisory Notice:[/yellow] {w}")
+    console.print()
+
+
+@app.command("risk-flags")
+def risk_flags_command(
+    symbol: str = typer.Argument(..., help="NSE stock symbol (e.g. INFY)"),
+    date_str: Optional[str] = typer.Option(None, "--date", "-d", help="Market date in YYYY-MM-DD format"),
+) -> None:
+    """
+    Audit surveillance flags, corporate events, and liquidity restrictions for a stock.
+    """
+    trade_date = None
+    if date_str:
+        try:
+            trade_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            console.print(f"[red]Error:[/red] Invalid date format '{date_str}'. Expected YYYY-MM-DD.", style="bold")
+            raise typer.Exit(code=1)
+
+    svc = ResearchService()
+    res = svc.get_risk_flags(symbol=symbol, as_of_date=trade_date)
+    r = res["result"]
+
+    table = Table(title=f"Risk & Surveillance Audit — {symbol.upper()} ({res['as_of']})", show_header=True, header_style="bold magenta")
+    table.add_column("Category", width=18)
+    table.add_column("Severity", width=10)
+    table.add_column("Audit Description")
+
+    status_color = "red" if r.get("blocking_veto_active") else "green"
+    console.print(f"\nOverall Risk Status: [{status_color}]{r.get('overall_risk_status')}[/{status_color}]\n")
+
+    for f in r.get("flags", []):
+        sev = f["severity"]
+        sev_color = "red" if sev == "BLOCKING" else ("yellow" if sev == "WARNING" else "green")
+        table.add_row(f["category"], f"[{sev_color}]{sev}[/{sev_color}]", f["description"])
+
+    console.print(table)
+    if res.get("warnings"):
+        for w in res["warnings"]:
+            console.print(f"[yellow]Notice:[/yellow] {w}")
+    console.print()
+
+
+@app.command("mcp")
+def mcp_command() -> None:
+    """
+    Launch the Model Context Protocol (FastMCP) server over stdio.
+    """
+    from signal_atlas.mcp.server import run_stdio
+    console.print("[cyan]Starting Signal Atlas FastMCP server on stdio transport...[/cyan]")
+    run_stdio()
 
 
 def main() -> None:

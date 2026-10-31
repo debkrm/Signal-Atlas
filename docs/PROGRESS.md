@@ -547,8 +547,33 @@ Complete (Awaiting Human Review)
      - Integration test: PostgreSQL integration test verifying extraction of adjusted history, feature computation, candidate production, ADTV calculation, clean trade approval, capacity rejection, and opening gap tolerance rejection.
      - Full test suite: 106 tests passing in 5.52s.
 
+- [x] **Completed Phase 4 (MCP Integration and Research Service Layer)**:
+  1. **Core Application Service (`src/signal_atlas/research/service.py`, `__init__.py`)**:
+     - `ResearchService`: Pure application service layer completely independent of MCP, powering Python scripts, CLI commands, and FastMCP tools with identical logic.
+     - `get_market_status`: Evaluates data freshness, benchmark NIFTY 50 trend regime, and system risk limits.
+     - `screen`: Evaluates candidates matching registered strategy (`trend_pullback`) with optional symbol filtering, liquid universe pre-filtering, and reward-to-risk ranking.
+     - `get_setup`: Retrieves complete trade setup geometry, position sizing breakdown, binding constraints, passed checks, and failed checks.
+     - `get_risk_flags`: Audits surveillance stage (ASM/GSM/circuits), corporate events, and 20-day liquidity thresholds.
+     - `get_backtest`: Reports strategy execution rules, transaction costs, and summary performance benchmarks.
+     - `portfolio_view`: Reports total equity, cash, open risk, concurrent positions, and sector concentrations.
+     - Graceful stubs for Phase 6 deferred domains (`get_fundamentals_snapshot`, `get_filings`, `get_news`) returning `DATA_NOT_AVAILABLE` with clear advisory notices.
+  2. **FastMCP Server Layer (`src/signal_atlas/mcp/server.py`, `models.py`, `__init__.py`)**:
+     - Built using official FastMCP (`from mcp.server.fastmcp import FastMCP`) running over standard input/output (`stdio`).
+     - Standard `MCPResponseEnvelope` enforced across all tools: `as_of`, `retrieved_at` (ISO-8601 UTC), `source`, `data_status`, `warnings`, and `result`.
+     - Strict prompt-injection and security boundaries: read-only quantitative tools, zero order-placement scopes, zero risk overrides, and clean input validation.
+  3. **CLI Research Commands (`src/signal_atlas/cli.py`)**:
+     - `signal-atlas market-status`: Renders Rich table of benchmark regime, freshness, and risk limits.
+     - `signal-atlas screen`: Renders ranked table of approved trade setups with sizing and R:R.
+     - `signal-atlas setup --symbol <SYM>`: Renders detailed setup geometry and risk audit.
+     - `signal-atlas risk-flags --symbol <SYM>`: Renders surveillance and corporate action audit.
+     - `signal-atlas mcp`: Launches the FastMCP server on stdio transport.
+  4. **Verification & Testing (`tests/unit/test_mcp_server.py`, `tests/integration/test_mcp_flow.py`)**:
+     - Unit tests: 11 tests verifying tool registration, envelope formatting, input validation, prompt-injection safety controls, and Phase 6 graceful responses.
+     - Integration tests: End-to-end research flow `screen -> get_setup -> get_risk_flags` against PostgreSQL test database verifying parity between ResearchService and FastMCP tool wrappers.
+     - Full test suite: 118 tests passing in 6.99s.
+
 ### Blockers
 - None.
 
 ### Next smallest task
-- Human review of Phase 3 deliverables on branch `phase-3/risk-engine-and-trade-setup` and subsequent merge into `main` before starting Phase 4 (Paper Trading / Automation / Reporting).
+- Human review of Phase 4 deliverables on branch `phase-4/mcp-integration` and subsequent merge into `main` before starting Phase 5 (Journal and Paper Trading).
