@@ -62,7 +62,30 @@ class TrendPullbackStrategy(Strategy):
         dt = features.as_of_date
         c = features.close
 
-        # Helper to construct rejection candidates
+        # 0. Derive baseline technical geometry levels based on ATR
+        atr = features.atr_14
+        entry_ref = c
+        entry_low = round_to_tick(c * Decimal("0.995"))
+        entry_high = round_to_tick(c * Decimal("1.005"))
+
+        if atr is not None and atr > Decimal("0") and c > Decimal("0"):
+            stop_price = round_to_tick(c - (atr * self.params.stop_atr_multiplier))
+            target_price = round_to_tick(c + (atr * self.params.target_atr_multiplier))
+            risk_per_share = entry_ref - stop_price
+            reward_per_share = target_price - entry_ref
+            reward_to_risk = (
+                (reward_per_share / risk_per_share).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                if risk_per_share > Decimal("0")
+                else Decimal("0.00")
+            )
+        else:
+            stop_price = c
+            target_price = c
+            risk_per_share = Decimal("0.00")
+            reward_per_share = Decimal("0.00")
+            reward_to_risk = Decimal("0.00")
+
+        # Helper to construct rejection candidates while preserving technical reference geometry
         def _reject(reason: str, detail: str) -> StrategyCandidate:
             return StrategyCandidate(
                 instrument_id=inst_id,
@@ -75,20 +98,21 @@ class TrendPullbackStrategy(Strategy):
                 rejection_reason=reason,
                 rejection_detail=detail,
                 close_t=c,
-                entry_reference=c,
-                entry_zone_low=c,
-                entry_zone_high=c,
-                stop_loss=c,
-                target_price=c,
-                risk_per_share=Decimal("0.00"),
-                reward_per_share=Decimal("0.00"),
-                reward_to_risk=Decimal("0.00"),
-                atr_14=features.atr_14,
+                entry_reference=entry_ref,
+                entry_zone_low=entry_low,
+                entry_zone_high=entry_high,
+                stop_loss=stop_price,
+                target_price=target_price,
+                risk_per_share=risk_per_share,
+                reward_per_share=reward_per_share,
+                reward_to_risk=reward_to_risk,
+                atr_14=atr,
                 rsi_14=features.rsi_14,
                 features_summary={
                     "ema_20": str(features.ema_20) if features.ema_20 else None,
                     "ema_50": str(features.ema_50) if features.ema_50 else None,
                     "rsi_14": str(features.rsi_14) if features.rsi_14 else None,
+                    "atr_14": str(features.atr_14) if features.atr_14 else None,
                     "weekly_bullish": features.weekly_trend_bullish,
                 },
             )
@@ -165,30 +189,14 @@ class TrendPullbackStrategy(Strategy):
             )
 
         # 7. Invalidation, Target, and Reward-to-Risk Architecture
-        atr = features.atr_14
-        entry_ref = c
-        entry_low = round_to_tick(c * Decimal("0.995"))
-        entry_high = round_to_tick(c * Decimal("1.005"))
-
-        # Stop placed at 1.5x ATR below close (rounded down to tick)
-        stop_price = round_to_tick(c - (atr * self.params.stop_atr_multiplier))
-        # Protect against non-positive or inverted stop
         if stop_price >= entry_ref or stop_price <= Decimal("0"):
             return _reject(
                 "INVALID_STOP_LEVEL",
                 f"Calculated stop ({stop_price}) is non-viable relative to entry ({entry_ref})",
             )
 
-        # Target placed at 3.0x ATR above close (rounded up to tick)
-        target_price = round_to_tick(c + (atr * self.params.target_atr_multiplier))
-
-        risk_per_share = entry_ref - stop_price
-        reward_per_share = target_price - entry_ref
-
         if risk_per_share <= Decimal("0"):
             return _reject("ZERO_OR_NEGATIVE_RISK", "Risk per share cannot be zero or negative")
-
-        reward_to_risk = (reward_per_share / risk_per_share).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
         if reward_to_risk < self.params.min_reward_to_risk:
             return _reject(

@@ -1,4 +1,5 @@
 import datetime
+from decimal import Decimal
 import logging
 import sys
 from typing import Optional
@@ -336,12 +337,12 @@ def screen_command(
         table.add_row(
             s["symbol"],
             "[green]BUY[/green]",
-            f"₹{Decimal(str(s['entry_price'])):,.2f}",
-            f"₹{Decimal(str(s['stop_loss'])):,.2f}",
-            f"₹{Decimal(str(s['target_price'])):,.2f}",
+            f"Rs. {Decimal(str(s['entry_price'])):,.2f}",
+            f"Rs. {Decimal(str(s['stop_loss'])):,.2f}",
+            f"Rs. {Decimal(str(s['target_price'])):,.2f}",
             f"{Decimal(str(s['reward_to_risk'])):.2f}",
             f"{s['allocated_quantity']:,}",
-            f"₹{Decimal(str(s['planned_capital_usage'])):,.2f}",
+            f"Rs. {Decimal(str(s['planned_capital_usage'])):,.2f}",
             s.get("limiting_factor", "-"),
         )
 
@@ -372,14 +373,31 @@ def setup_command(
     console.print(f"\n[cyan]Trade Setup Audit[/cyan] — Symbol: [bold]{symbol.upper()}[/bold] | As Of: [bold]{res['as_of']}[/bold]\n")
 
     if not s.get("is_approved"):
-        console.print(f"[bold red]Signal State: {s.get('signal_state', 'AVOID')}[/bold red]")
-        console.print(f"Primary Reason: [yellow]{s.get('primary_rejection_reason', 'Did not qualify')}[/yellow]")
+        console.print(f"[bold red]Signal State: {s.get('signal_state', 'AVOID')} (BLOCKED)[/bold red]")
+        console.print(f"Primary Reason: [yellow]{s.get('primary_rejection_reason', 'Did not qualify')}[/yellow]\n")
+
+        if s.get("entry_price"):
+            table = Table(title="Calculated Technical Geometry (Execution Blocked)", show_header=True, header_style="bold magenta")
+            table.add_column("Parameter", style="dim", width=22)
+            table.add_column("Value", style="bold")
+            table.add_row("Reference Entry", f"Rs. {Decimal(str(s['entry_price'])):,.2f}")
+            table.add_row("Calculated Stop Loss", f"Rs. {Decimal(str(s['stop_loss'])):,.2f}")
+            table.add_row("Calculated Target", f"Rs. {Decimal(str(s['target_price'])):,.2f}")
+            table.add_row("Reward-to-Risk", f"{Decimal(str(s.get('reward_to_risk', '0.00'))):.2f}")
+            table.add_row("Allocated Quantity", "0 (Blocked by Risk Gates)")
+            console.print(table)
+
         if s.get("failed_checks"):
             console.print("\n[bold]Failed Gates:[/bold]")
             for fc in s["failed_checks"]:
                 name = fc.get('name') or fc.get('check_id', 'Gate')
                 msg = fc.get('message') or fc.get('explanation', '')
                 console.print(f"  * [red][X][/red] {name}: {msg}")
+        if s.get("passed_checks"):
+            console.print(f"\n[green]Passed Risk Checks:[/green] {len(s['passed_checks'])} gates verified")
+        if res.get("warnings"):
+            for w in res["warnings"]:
+                console.print(f"[yellow]Advisory Notice:[/yellow] {w}")
         console.print()
         return
 
@@ -389,14 +407,14 @@ def setup_command(
 
     table.add_row("Signal State", "[bold green]BUY[/bold green]")
     table.add_row("Strategy", f"{s.get('strategy_id')} ({s.get('strategy_version')})")
-    table.add_row("Reference Entry", f"₹{Decimal(str(s['entry_price'])):,.2f}")
-    table.add_row("Entry Zone", f"₹{Decimal(str(s['entry_zone_low'])):,.2f} – ₹{Decimal(str(s['entry_zone_high'])):,.2f}")
-    table.add_row("Stop Loss", f"₹{Decimal(str(s['stop_loss'])):,.2f}")
-    table.add_row("Target Price", f"₹{Decimal(str(s['target_price'])):,.2f}")
+    table.add_row("Reference Entry", f"Rs. {Decimal(str(s['entry_price'])):,.2f}")
+    table.add_row("Entry Zone", f"Rs. {Decimal(str(s['entry_zone_low'])):,.2f} - Rs. {Decimal(str(s['entry_zone_high'])):,.2f}")
+    table.add_row("Stop Loss", f"Rs. {Decimal(str(s['stop_loss'])):,.2f}")
+    table.add_row("Target Price", f"Rs. {Decimal(str(s['target_price'])):,.2f}")
     table.add_row("Reward-to-Risk", f"{Decimal(str(s['reward_to_risk'])):.2f}")
     table.add_row("Allocated Quantity", f"{s['allocated_quantity']:,} shares")
-    table.add_row("Capital Allocation", f"₹{Decimal(str(s['planned_capital_usage'])):,.2f}")
-    table.add_row("Planned Risk", f"₹{Decimal(str(s['planned_risk_amount'])):,.2f} ({Decimal(str(s['planned_risk_pct'])):.2%})")
+    table.add_row("Capital Allocation", f"Rs. {Decimal(str(s['planned_capital_usage'])):,.2f}")
+    table.add_row("Planned Risk", f"Rs. {Decimal(str(s['planned_risk_amount'])):,.2f} ({Decimal(str(s['planned_risk_pct'])):.2%})")
     table.add_row("Binding Constraint", str(s.get("limiting_factor")))
 
     console.print(table)
