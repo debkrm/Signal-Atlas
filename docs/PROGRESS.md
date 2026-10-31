@@ -508,8 +508,47 @@ Complete (Awaiting Human Review)
      - `tests/unit/test_backtest.py`: 10/10 unit tests passing.
      - `tests/integration/test_backtest_simulation.py`: PostgreSQL integration test passing.
 
+- [x] **Completed Phase 3 (Risk Engine and Trade Setup)**:
+  1. **Domain Models (`src/signal_atlas/risk/models.py`)**:
+     - `SurveillanceStatus`: Enumeration of NSE surveillance stages (`CLEAR`, `ASM_STAGE_1`..`4`, `GSM_STAGE_1`..`2`, `CIRCUIT_FILTER_RESTRICTED`, `UNKNOWN`).
+     - `CheckSeverity`: Severity classification (`BLOCKING`, `WARNING`).
+     - `RiskCheckResult`: Strongly typed audit record containing check ID, human-readable name, severity, pass/fail status, timestamp, and explanation.
+     - `OpenPositionRisk`: Tracks individual holding metrics (entry, current price, stop loss, quantity, capital allocated, open risk amount, sector).
+     - `PortfolioState`: Point-in-time portfolio context tracking total equity, available cash, peak equity, dynamic drawdown percentage property, open positions, total open risk, concurrent position count, and sector allocations.
+     - `RiskConfig`: Configuration parameters (₹10L total capital, 1.0% risk per trade, 20% max position capital, 10 max concurrent positions, 6.0% max aggregate open risk, 30% max sector exposure, 1.50 min R:R, ₹5 Cr min 20-day ADTV, 2.0% max ADTV participation, 2.0% max opening gap deviation, market regime gate, surveillance veto, 5-day earnings blackout window, 10% drawdown kill-switch).
+     - `TradeSetup`: Audited trade setup output with reference geometry, position sizing, approved/rejected status, passed/failed checks list, advisory warnings list, and provenance metadata.
+  2. **Deterministic Position Sizing Engine (`src/signal_atlas/risk/sizing.py`)**:
+     - Mathematical allocation:
+       $$Q = \max\left(0, \min(Q_{\text{risk}}, Q_{\text{capital}}, Q_{\text{liquidity}})\right)$$
+       where $Q_{\text{risk}} = \lfloor \frac{\text{Equity} \times \text{RiskPct}}{\text{Entry} - \text{Stop}} \rfloor$, $Q_{\text{capital}} = \min(\lfloor \frac{\text{Equity} \times \text{CapPct}}{\text{Entry}} \rfloor, \lfloor \frac{\text{AvailableCash}}{\text{Entry}} \rfloor)$, and $Q_{\text{liquidity}} = \lfloor \frac{\text{ADTV} \times \text{PartPct}}{\text{Entry}} \rfloor$.
+     - Explicit binding constraint classification (`RISK_BUDGET`, `CAPITAL_CAP`, `LIQUIDITY_CAP`, or `REJECTED_ZERO`).
+  3. **Configuration-Driven Risk Engine (`src/signal_atlas/risk/engine.py`)**:
+     - 14 distinct rule checks with pure functional evaluation:
+       1. Baseline Strategy Candidate Validity (`SignalState.BUY` and `is_valid`)
+       2. Reference Price Geometry & Valid Stop Loss ($P_{\text{entry}} > P_{\text{stop}} > 0$)
+       3. Next-Day Opening Execution Timing ($t+1$) & Opening Gap Tolerance ($\le 2\%$)
+       4. Portfolio Drawdown Kill-Switch (halts new BUYs when current drawdown $\ge 10\%$)
+       5. Concurrent Positions & Duplicate Holding Limit ($\le 10$ positions)
+       6. Aggregate Portfolio Open Risk Limit ($\le 6\%$ portfolio open risk)
+       7. Sector Concentration Limit ($\le 30\%$ single sector capital)
+       8. Minimum Liquidity Threshold (20-day ADTV $\ge ₹5\text{ Cr}$)
+       9. Regulatory & Surveillance Restrictions (veto on ASM Stage 1-4, GSM Stage 1-2, Circuit Filter Restrictions)
+       10. Corporate Earnings Blackout Window ($\pm 5\text{ days}$ around quarterly results)
+       11. Promoter Pledge Advisory ($\le 25\%$ non-blocking warning threshold)
+       12. Series Eligibility (Cash Equity "EQ" only)
+       13. Market Regime Gate (Macro benchmark trend alignment)
+       14. Cash Availability & Capital Allocation
+     - Strict data policy:
+       - Mandatory missing data (ADTV, stop-loss, entry price) blocks setup approval.
+       - Non-mandatory / advisory missing data (earnings date, promoter pledge) produces visible advisory warnings without blocking approval.
+       - Surveillance status `UNKNOWN` reports warning without blocking unless restricted.
+  4. **Verification & Testing (`tests/unit/test_risk_engine.py`, `tests/integration/test_risk_engine_integration.py`)**:
+     - Unit tests: 19 tests verifying mathematical sizing and 16 hand-calculated acceptance cases.
+     - Integration test: PostgreSQL integration test verifying extraction of adjusted history, feature computation, candidate production, ADTV calculation, clean trade approval, capacity rejection, and opening gap tolerance rejection.
+     - Full test suite: 106 tests passing in 5.52s.
+
 ### Blockers
 - None.
 
 ### Next smallest task
-- Human review of Phase 2 deliverables on branch `phase-2/indicators-and-strategy` and subsequent merge into `main` before starting Phase 3 (Risk engine and portfolio execution rules).
+- Human review of Phase 3 deliverables on branch `phase-3/risk-engine-and-trade-setup` and subsequent merge into `main` before starting Phase 4 (Paper Trading / Automation / Reporting).
