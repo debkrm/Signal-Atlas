@@ -7,6 +7,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, ConfigDict, Field
 
 
+from signal_atlas.universe.provenance import get_code_revision
+
+
 class EligibilityReason(str, Enum):
     ELIGIBLE = "ELIGIBLE"
     EXCLUDED_ETF_MUTUAL_FUND = "EXCLUDED_ETF_MUTUAL_FUND"
@@ -43,9 +46,10 @@ class UniverseConfig(BaseModel):
     top_n: Optional[int] = Field(default=None, description="Optional cap on eligible universe size ranked by ADTV")
     adjustment_version: str = Field(default="v1.4", description="Authoritative candidate adjustment dataset version")
     raw_data_version: str = Field(default="RAW_NSE_2022_2024_V1", description="Raw dataset snapshot identifier")
+    raw_data_manifest_hash: Optional[str] = Field(default=None, description="Verifiable cryptographic SHA-256 fingerprint of the raw dataset manifest")
     data_coverage_start: datetime.date = Field(default=datetime.date(2022, 1, 3), description="Data coverage window start date")
     data_coverage_end: datetime.date = Field(default=datetime.date(2024, 12, 31), description="Data coverage window end date")
-    code_revision: str = Field(default="phase-1b-iii.1", description="Code revision or build identifier")
+    code_revision: str = Field(default_factory=get_code_revision, description="Verifiable code revision commit SHA or build identifier")
     config_version: str = Field(default="1.0", description="Semantic version of universe policy specification")
 
     allow_partial_lookback: bool = Field(default=False, description="Explicit opt-in to allow lookback windows with fewer sessions than lookback_sessions")
@@ -86,6 +90,7 @@ class UniverseConfig(BaseModel):
             "min_trading_completeness": _ser(self.min_trading_completeness),
             "min_turnover_completeness": _ser(self.min_turnover_completeness),
             "permitted_series": _ser(self.permitted_series),
+            "raw_data_manifest_hash": self.raw_data_manifest_hash,
             "raw_data_version": self.raw_data_version,
             "top_n": self.top_n,
         }
@@ -98,17 +103,16 @@ class UniverseConfig(BaseModel):
     @property
     def config_hash(self) -> str:
         """
-        Cryptographic SHA-256 fingerprint (16 hex chars) of all calculation inputs.
-        Guarantees deterministic collision-free identity for any parameter change.
+        Cryptographic SHA-256 fingerprint (full 64 hex characters) of all calculation inputs.
+        Guarantees deterministic collision-resistant identity for any parameter change.
         """
-        digest = hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
-        return digest[:16]
+        return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
 
     @property
     def config_identifier(self) -> str:
         """
-        Canonical immutable configuration identifier incorporating semantic version and hash.
-        e.g., UNIV-v1.0-e3b0c44298fc1c14
+        Canonical immutable configuration identifier incorporating semantic version and full hash.
+        e.g., UNIV-v1.0-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
         """
         return f"UNIV-v{self.config_version}-{self.config_hash}"
 
@@ -157,6 +161,8 @@ class UniverseSnapshot(BaseModel):
     config_identifier: str
     adjustment_version: str = "v1.4"
     raw_data_version: str = "RAW_NSE_2022_2024_V1"
+    raw_data_manifest_hash: Optional[str] = None
+    raw_data_manifest: Optional[Dict[str, Any]] = None
     data_coverage_start: datetime.date = datetime.date(2022, 1, 3)
     data_coverage_end: datetime.date = datetime.date(2024, 12, 31)
     code_revision: str = "phase-1b-iii.1"

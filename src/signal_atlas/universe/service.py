@@ -15,6 +15,7 @@ from signal_atlas.db.models.universe import UniverseMemberRecord, UniverseSnapsh
 from signal_atlas.db.session import get_db
 from signal_atlas.quality.adjustment import AdjustedPriceRecord, get_point_in_time_adjusted_history
 from signal_atlas.quality.bulk_adjustment import get_quarantined_unresolved_instruments
+from signal_atlas.universe.provenance import compute_raw_data_manifest, get_code_revision
 from signal_atlas.universe.models import (
     EligibilityReason,
     UniverseConfig,
@@ -78,6 +79,14 @@ class PointInTimeUniverseService:
         db_cm = get_db(session or self._external_db)
 
         with db_cm as db:
+            # -1. Compute verifiable raw data manifest and bind to configuration if not explicitly provided
+            raw_manifest = compute_raw_data_manifest(db)
+            if cfg.raw_data_manifest_hash is None:
+                cfg = cfg.model_copy(update={
+                    "raw_data_manifest_hash": raw_manifest.manifest_fingerprint,
+                    "raw_data_version": f"RAW-MANIFEST-{raw_manifest.manifest_fingerprint[:16]}",
+                })
+
             # 0. Validate as_of_date against coverage bounds and trading calendar
             if as_of_date > cfg.data_coverage_end:
                 raise ValueError(
@@ -402,10 +411,9 @@ class PointInTimeUniverseService:
             eligible_candidates = [m for m in evaluated_members if m.is_eligible]
             excluded_candidates = [m for m in evaluated_members if not m.is_eligible]
 
-            # Sort eligible candidates deterministically by ADTV desc, then symbol asc
+            # Sort eligible candidates deterministically by ADTV desc, then symbol asc for equal ADTV
             eligible_candidates.sort(
-                key=lambda m: (m.average_daily_turnover or Decimal("0"), m.symbol),
-                reverse=True,
+                key=lambda m: (-(m.average_daily_turnover or Decimal("0")), m.symbol),
             )
 
             final_eligible: List[UniverseMember] = []
@@ -433,6 +441,8 @@ class PointInTimeUniverseService:
                 config_identifier=cfg.config_identifier,
                 adjustment_version=cfg.adjustment_version,
                 raw_data_version=cfg.raw_data_version,
+                raw_data_manifest_hash=raw_manifest.manifest_fingerprint,
+                raw_data_manifest=raw_manifest.canonical_dict(),
                 data_coverage_start=cfg.data_coverage_start,
                 data_coverage_end=cfg.data_coverage_end,
                 code_revision=cfg.code_revision,
@@ -482,6 +492,7 @@ class PointInTimeUniverseService:
             permitted_series=",".join(cfg.permitted_series),
             adjustment_version=snapshot.adjustment_version,
             raw_data_version=snapshot.raw_data_version,
+            raw_data_manifest_hash=snapshot.raw_data_manifest_hash,
             data_coverage_start=snapshot.data_coverage_start,
             data_coverage_end=snapshot.data_coverage_end,
             code_revision=snapshot.code_revision,

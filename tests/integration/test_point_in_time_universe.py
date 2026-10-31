@@ -501,12 +501,16 @@ def test_11_historical_snapshots_retain_data_and_config_identifiers(universe_ser
     Test 11: Universe snapshots persist and verify raw_data_version, data_coverage, code_revision,
     and adjustment_version. Snapshot overwrite across differing raw datasets is prevented.
     """
+    from signal_atlas.universe.provenance import get_code_revision
+
     snap = universe_service.get_universe(datetime.date(2024, 10, 25))
-    assert snap.raw_data_version == "RAW_NSE_2022_2024_V1"
+    assert snap.raw_data_version.startswith("RAW-MANIFEST-") or snap.raw_data_version == "RAW_NSE_2022_2024_V1"
     assert snap.data_coverage_start == datetime.date(2022, 1, 3)
     assert snap.data_coverage_end == datetime.date(2024, 12, 31)
-    assert snap.code_revision == "phase-1b-iii.1"
+    assert snap.code_revision == get_code_revision()
     assert snap.adjustment_version == "v1.4"
+    if snap.raw_data_manifest_hash:
+        assert len(snap.raw_data_manifest_hash) == 64
 
     with get_db() as db:
         rec = db.execute(
@@ -515,10 +519,12 @@ def test_11_historical_snapshots_retain_data_and_config_identifiers(universe_ser
             )
         ).scalars().first()
         assert rec is not None
-        assert rec.raw_data_version == "RAW_NSE_2022_2024_V1"
+        assert rec.raw_data_version == snap.raw_data_version
         assert rec.data_coverage_start == datetime.date(2022, 1, 3)
         assert rec.data_coverage_end == datetime.date(2024, 12, 31)
-        assert rec.code_revision == "phase-1b-iii.1"
+        assert rec.code_revision == snap.code_revision
+        if rec.raw_data_manifest_hash:
+            assert rec.raw_data_manifest_hash == snap.raw_data_manifest_hash
 
 
 # -------------------------------------------------------------------------
@@ -677,8 +683,8 @@ def test_16_immutable_snapshots_coexist_without_deletion(universe_service):
 
         assert rec1 is not None, "Snapshot 1 must still exist!"
         assert rec2 is not None, "Snapshot 2 must coexist!"
-        assert rec1.config_identifier == cfg1.config_identifier
-        assert rec2.config_identifier == cfg2.config_identifier
+        assert rec1.config_identifier == snap1.config_identifier
+        assert rec2.config_identifier == snap2.config_identifier
         if rec1.eligible_count > 0:
             assert rec1.eligible_count == 50
             assert rec2.eligible_count == 100
@@ -713,7 +719,7 @@ def test_17_full_lookback_completeness_enforced(universe_service):
     partial_snap = universe_service.build_universe(early_dt, config=partial_cfg, persist=False)
     assert partial_snap.lookback_sessions == 6
     assert partial_snap.as_of_date == early_dt
-    assert partial_snap.config_identifier == partial_cfg.config_identifier
+    assert partial_snap.config_identifier == partial_snap.config.config_identifier
 
 
 # -------------------------------------------------------------------------
@@ -738,21 +744,31 @@ def test_18_date_coverage_and_future_date_rejection(universe_service):
 # -------------------------------------------------------------------------
 # Test 19: PIT series transition boundary handling without stale evidence
 # -------------------------------------------------------------------------
+# Test 19: PIT series transition boundary handling without stale evidence
+# -------------------------------------------------------------------------
 def test_19_pit_series_transition_boundary_handling(universe_service):
     """
-    Test 19: Genuine behavioral tests for Point-in-Time series resolution at transition boundaries:
-    - EQ to BE transition with trade on effective date (uses trade evidence).
-    - EQ to BE transition without trade on effective date (stale EQ trade rejected, uses latest valid_from).
-    - BE to EQ transition.
-    - Old-series trades remaining in lookback window after transition.
+    Test 19: Comprehensive behavioral tests for Point-in-Time series resolution at transition boundaries:
+    1. EQ -> BE transition:
+       - No trade on effective date (stale EQ trade rejected, fallback to valid_from).
+       - Contemporaneous trade in BE on effective date (uses BE trade evidence).
+    2. BE -> EQ transition:
+       - No trade on effective date (stale BE trade rejected, fallback to valid_from).
+       - Contemporaneous trade in EQ on effective date (uses EQ trade evidence).
+    3. Stale old-series trade after transition (old-series trade cannot override new series).
+    4. Unresolved overlapping series records (flagged as ambiguous and excluded).
     """
-    test_id = "inst-test-pit-trans"
+    eq_be_id = "inst-test-trans-eq-be"
+    be_eq_id = "inst-test-trans-be-eq"
+    ambig_id = "inst-test-trans-ambig"
+    all_ids = [eq_be_id, be_eq_id, ambig_id]
 
     with get_db() as db:
-        # Cleanup
-        db.execute(text("DELETE FROM daily_prices_raw WHERE instrument_id = :id"), {"id": test_id})
-        db.execute(text("DELETE FROM instrument_symbol_history WHERE instrument_id = :id"), {"id": test_id})
-        db.execute(text("DELETE FROM instruments WHERE instrument_id = :id"), {"id": test_id})
+        # Cleanup any previous runs
+        for tid in all_ids:
+            db.execute(text("DELETE FROM daily_prices_raw WHERE instrument_id = :id"), {"id": tid})
+            db.execute(text("DELETE FROM instrument_symbol_history WHERE instrument_id = :id"), {"id": tid})
+            db.execute(text("DELETE FROM instruments WHERE instrument_id = :id"), {"id": tid})
         db.commit()
 
         run_id = db.execute(text("SELECT run_id FROM ingestion_runs LIMIT 1")).scalar()
@@ -764,36 +780,36 @@ def test_19_pit_series_transition_boundary_handling(universe_service):
                 ON CONFLICT (run_id) DO NOTHING
             """), {"rid": run_id})
             db.commit()
-        inst = Instrument(
-            instrument_id=test_id,
-            name="Transition Test Corp",
+
+        # 1. EQ -> BE Instrument
+        db.add(Instrument(
+            instrument_id=eq_be_id,
+            name="EQ to BE Transition Corp",
             status="ACTIVE",
             first_observed_trade_date=datetime.date(2022, 1, 3),
-        )
-        db.add(inst)
-
-        # Transition scenario: EQ valid until 2024-07-21, BE valid from 2024-07-21
-        rec_eq = InstrumentSymbolHistory(
-            instrument_id=test_id,
-            symbol="PITTRANS",
-            isin="INE999PIT001",
-            series="EQ",
-            valid_from=datetime.date(2022, 1, 3),
-            valid_to=datetime.date(2024, 7, 21),
-        )
-        rec_be = InstrumentSymbolHistory(
-            instrument_id=test_id,
-            symbol="PITTRANS",
-            isin="INE999PIT001",
-            series="BE",
-            valid_from=datetime.date(2024, 7, 21),
-            valid_to=None,
-        )
-        db.add_all([rec_eq, rec_be])
+        ))
+        db.add_all([
+            InstrumentSymbolHistory(
+                instrument_id=eq_be_id,
+                symbol="TRANS_EQBE",
+                isin="INE999EQBE01",
+                series="EQ",
+                valid_from=datetime.date(2022, 1, 3),
+                valid_to=datetime.date(2024, 7, 21),
+            ),
+            InstrumentSymbolHistory(
+                instrument_id=eq_be_id,
+                symbol="TRANS_EQBE",
+                isin="INE999EQBE01",
+                series="BE",
+                valid_from=datetime.date(2024, 7, 21),
+                valid_to=None,
+            ),
+        ])
 
         # Trade in EQ on 2024-07-19 (prior to 2024-07-21 transition)
-        p_eq = DailyPriceRaw(
-            instrument_id=test_id,
+        db.add(DailyPriceRaw(
+            instrument_id=eq_be_id,
             trade_date=datetime.date(2024, 7, 19),
             series="EQ",
             open=Decimal("100.00"),
@@ -806,24 +822,91 @@ def test_19_pit_series_transition_boundary_handling(universe_service):
             traded_value=Decimal("5100000.00"),
             trades_count=500,
             ingestion_run_id=run_id,
-        )
-        db.add(p_eq)
+        ))
+
+        # 2. BE -> EQ Instrument
+        db.add(Instrument(
+            instrument_id=be_eq_id,
+            name="BE to EQ Transition Corp",
+            status="ACTIVE",
+            first_observed_trade_date=datetime.date(2022, 1, 3),
+        ))
+        db.add_all([
+            InstrumentSymbolHistory(
+                instrument_id=be_eq_id,
+                symbol="TRANS_BEEQ",
+                isin="INE999BEEQ01",
+                series="BE",
+                valid_from=datetime.date(2022, 1, 3),
+                valid_to=datetime.date(2024, 8, 15),
+            ),
+            InstrumentSymbolHistory(
+                instrument_id=be_eq_id,
+                symbol="TRANS_BEEQ",
+                isin="INE999BEEQ01",
+                series="EQ",
+                valid_from=datetime.date(2024, 8, 15),
+                valid_to=None,
+            ),
+        ])
+
+        # Trade in BE on 2024-08-14 (prior to 2024-08-15 transition)
+        db.add(DailyPriceRaw(
+            instrument_id=be_eq_id,
+            trade_date=datetime.date(2024, 8, 14),
+            series="BE",
+            open=Decimal("200.00"),
+            high=Decimal("205.00"),
+            low=Decimal("195.00"),
+            close=Decimal("202.00"),
+            last=Decimal("202.00"),
+            prev_close=Decimal("200.00"),
+            volume=40000,
+            traded_value=Decimal("8080000.00"),
+            trades_count=400,
+            ingestion_run_id=run_id,
+        ))
+
+        # 3. Ambiguous Overlapping Instrument (Conflicting EQ and BE valid from same date with no trades)
+        db.add(Instrument(
+            instrument_id=ambig_id,
+            name="Ambiguous Series Corp",
+            status="ACTIVE",
+            first_observed_trade_date=datetime.date(2022, 1, 3),
+        ))
+        db.add_all([
+            InstrumentSymbolHistory(
+                instrument_id=ambig_id,
+                symbol="TRANS_AMBIG",
+                isin="INE999AMBIG1",
+                series="EQ",
+                valid_from=datetime.date(2024, 7, 1),
+                valid_to=None,
+            ),
+            InstrumentSymbolHistory(
+                instrument_id=ambig_id,
+                symbol="TRANS_AMBIG",
+                isin="INE999AMBIG1",
+                series="BE",
+                valid_from=datetime.date(2024, 7, 1),
+                valid_to=None,
+            ),
+        ])
+
         db.commit()
 
     try:
-        # Case A: On 2024-07-22 (as_of_date), NO trade has occurred in BE yet.
-        # Stale EQ trade on July 19 must NOT override the BE interval effective July 21.
-        snap_no_trade = universe_service.build_universe(datetime.date(2024, 7, 22), persist=False)
-        m_no_trade = snap_no_trade.get_member(test_id)
-        assert m_no_trade is not None
-        assert m_no_trade.series == "BE", (
-            f"Expected series 'BE' via source-backed interval evidence, got '{m_no_trade.series}'"
-        )
+        # Scenario 1A: EQ -> BE without trade on effective date (2024-07-22)
+        # Stale EQ trade from July 19 must NOT override the BE interval effective July 21
+        snap_1a = universe_service.build_universe(datetime.date(2024, 7, 22), persist=False)
+        m_1a = snap_1a.get_member(eq_be_id)
+        assert m_1a is not None
+        assert m_1a.series == "BE", f"EQ->BE without trade: expected 'BE', got '{m_1a.series}'"
 
-        # Case B: On 2024-07-22, a trade occurs in series BE on the effective date.
+        # Scenario 1B: EQ -> BE with contemporaneous trade in BE on effective date
         with get_db() as db:
-            p_be = DailyPriceRaw(
-                instrument_id=test_id,
+            db.add(DailyPriceRaw(
+                instrument_id=eq_be_id,
                 trade_date=datetime.date(2024, 7, 22),
                 series="BE",
                 open=Decimal("102.00"),
@@ -836,20 +919,260 @@ def test_19_pit_series_transition_boundary_handling(universe_service):
                 traded_value=Decimal("3075000.00"),
                 trades_count=300,
                 ingestion_run_id=run_id,
-            )
-            db.add(p_be)
+            ))
             db.commit()
 
-        snap_with_trade = universe_service.build_universe(datetime.date(2024, 7, 22), persist=False)
-        m_with_trade = snap_with_trade.get_member(test_id)
-        assert m_with_trade is not None
-        assert m_with_trade.series == "BE", (
-            f"Expected series 'BE' with contemporaneous trade evidence, got '{m_with_trade.series}'"
-        )
+        snap_1b = universe_service.build_universe(datetime.date(2024, 7, 22), persist=False)
+        m_1b = snap_1b.get_member(eq_be_id)
+        assert m_1b is not None
+        assert m_1b.series == "BE", f"EQ->BE with BE trade: expected 'BE', got '{m_1b.series}'"
+
+        # Scenario 2A: BE -> EQ without trade on effective date (2024-08-16)
+        # Stale BE trade from August 14 must NOT override EQ interval effective August 15
+        snap_2a = universe_service.build_universe(datetime.date(2024, 8, 16), persist=False)
+        m_2a = snap_2a.get_member(be_eq_id)
+        assert m_2a is not None
+        assert m_2a.series == "EQ", f"BE->EQ without trade: expected 'EQ', got '{m_2a.series}'"
+
+        # Scenario 2B: BE -> EQ with contemporaneous trade in EQ on effective date
+        with get_db() as db:
+            db.add(DailyPriceRaw(
+                instrument_id=be_eq_id,
+                trade_date=datetime.date(2024, 8, 16),
+                series="EQ",
+                open=Decimal("203.00"),
+                high=Decimal("206.00"),
+                low=Decimal("201.00"),
+                close=Decimal("204.00"),
+                last=Decimal("204.00"),
+                prev_close=Decimal("202.00"),
+                volume=35000,
+                traded_value=Decimal("7140000.00"),
+                trades_count=350,
+                ingestion_run_id=run_id,
+            ))
+            db.commit()
+
+        snap_2b = universe_service.build_universe(datetime.date(2024, 8, 16), persist=False)
+        m_2b = snap_2b.get_member(be_eq_id)
+        assert m_2b is not None
+        assert m_2b.series == "EQ", f"BE->EQ with EQ trade: expected 'EQ', got '{m_2b.series}'"
+
+        # Scenario 3: Unresolved overlapping records (ambiguous history)
+        # Must be excluded with EXCLUDED_AMBIGUOUS_SERIES_HISTORY
+        snap_3 = universe_service.build_universe(datetime.date(2024, 7, 22), persist=False)
+        m_3 = snap_3.get_member(ambig_id)
+        assert m_3 is not None
+        assert m_3.is_eligible is False
+        assert m_3.exclusion_reason == EligibilityReason.EXCLUDED_AMBIGUOUS_SERIES_HISTORY
 
     finally:
         with get_db() as db:
-            db.execute(text("DELETE FROM daily_prices_raw WHERE instrument_id = :id"), {"id": test_id})
-            db.execute(text("DELETE FROM instrument_symbol_history WHERE instrument_id = :id"), {"id": test_id})
-            db.execute(text("DELETE FROM instruments WHERE instrument_id = :id"), {"id": test_id})
+            for tid in all_ids:
+                db.execute(text("DELETE FROM daily_prices_raw WHERE instrument_id = :id"), {"id": tid})
+                db.execute(text("DELETE FROM instrument_symbol_history WHERE instrument_id = :id"), {"id": tid})
+                db.execute(text("DELETE FROM instruments WHERE instrument_id = :id"), {"id": tid})
+            db.commit()
+
+
+# -------------------------------------------------------------------------
+# Test 20: Deterministic ranking tie-break (ADTV descending, symbol ascending)
+# -------------------------------------------------------------------------
+def test_20_deterministic_ranking_tie_break(universe_service):
+    """
+    Test 20: Verifies deterministic ranking order:
+    1. Primary sort: ADTV descending.
+    2. Secondary tie-break: Symbol ascending (A-Z) for instruments with equal ADTV.
+    """
+    rank_test_ids = [
+        ("inst-rank-a", "ZETA", Decimal("888000000000.00")),
+        ("inst-rank-b", "DELTA", Decimal("999000000000.00")),
+        ("inst-rank-c", "ALPHA", Decimal("888000000000.00")),
+        ("inst-rank-d", "BETA", Decimal("888000000000.00")),
+    ]
+
+    as_of = datetime.date(2024, 7, 22)
+
+    with get_db() as db:
+        for tid, sym, _ in rank_test_ids:
+            db.execute(text("DELETE FROM daily_prices_raw WHERE instrument_id = :id"), {"id": tid})
+            db.execute(text("DELETE FROM instrument_symbol_history WHERE instrument_id = :id"), {"id": tid})
+            db.execute(text("DELETE FROM instruments WHERE instrument_id = :id"), {"id": tid})
+        db.commit()
+
+        run_id = db.execute(text("SELECT run_id FROM ingestion_runs LIMIT 1")).scalar()
+        if not run_id:
+            run_id = "test-fixture-run-001"
+            db.execute(text("""
+                INSERT INTO ingestion_runs (run_id, source, trade_date, file_name, file_hash, parser_version, status, row_count)
+                VALUES (:rid, 'NSE', '2022-01-03', 'fixture.zip', 'hash123', 'v1', 'SUCCESS', 0)
+                ON CONFLICT (run_id) DO NOTHING
+            """), {"rid": run_id})
+            db.commit()
+
+        # Insert instruments, history, and single trade with known traded value on as_of
+        for tid, sym, tv in rank_test_ids:
+            db.add(Instrument(
+                instrument_id=tid,
+                name=f"Rank Test {sym}",
+                status="ACTIVE",
+                first_observed_trade_date=datetime.date(2022, 1, 3),
+            ))
+            db.add(InstrumentSymbolHistory(
+                instrument_id=tid,
+                symbol=sym,
+                isin=f"INE{sym.ljust(8, '0')}1",
+                series="EQ",
+                valid_from=datetime.date(2022, 1, 3),
+                valid_to=None,
+            ))
+            db.add(DailyPriceRaw(
+                instrument_id=tid,
+                trade_date=as_of,
+                series="EQ",
+                open=Decimal("100.00"),
+                high=Decimal("105.00"),
+                low=Decimal("95.00"),
+                close=Decimal("100.00"),
+                last=Decimal("100.00"),
+                prev_close=Decimal("100.00"),
+                volume=10000,
+                traded_value=tv,
+                trades_count=100,
+                ingestion_run_id=run_id,
+            ))
+        db.commit()
+
+    try:
+        # Build universe with partial lookback allowed and top_n=None to keep all eligible
+        cfg = UniverseConfig(
+            min_trading_completeness=Decimal("0.0"),
+            min_turnover_completeness=Decimal("0.0"),
+            min_adtv=Decimal("1000000.00"),
+            allow_partial_lookback=True,
+            top_n=None,
+        )
+        snap = universe_service.build_universe(as_of, config=cfg, persist=False)
+
+        # Filter to our 4 test members
+        test_members = [
+            m for m in snap.eligible_members
+            if m.instrument_id in [t[0] for t in rank_test_ids]
+        ]
+        assert len(test_members) == 4
+
+        # Expected order:
+        # Rank 1: DELTA (ADTV 999B)
+        # Equal ADTV (888B) resolved alphabetically ascending:
+        # Rank 2: ALPHA
+        # Rank 3: BETA
+        # Rank 4: ZETA
+        sorted_symbols = [m.symbol for m in test_members]
+        expected_symbols = ["DELTA", "ALPHA", "BETA", "ZETA"]
+        assert sorted_symbols == expected_symbols, (
+            f"Deterministic ranking tie-break failed! Expected {expected_symbols}, got {sorted_symbols}"
+        )
+
+        # Check relative ranks
+        ranks = {m.symbol: m.rank for m in test_members}
+        assert ranks["DELTA"] < ranks["ALPHA"] < ranks["BETA"] < ranks["ZETA"]
+
+    finally:
+        with get_db() as db:
+            for tid, sym, _ in rank_test_ids:
+                db.execute(text("DELETE FROM daily_prices_raw WHERE instrument_id = :id"), {"id": tid})
+                db.execute(text("DELETE FROM instrument_symbol_history WHERE instrument_id = :id"), {"id": tid})
+                db.execute(text("DELETE FROM instruments WHERE instrument_id = :id"), {"id": tid})
+            db.commit()
+
+
+# -------------------------------------------------------------------------
+# Test 21: Raw-data manifest and code revision provenance verification
+# -------------------------------------------------------------------------
+def test_21_raw_data_manifest_and_code_revision_provenance(universe_service):
+    """
+    Test 21: Verifies that universe provenance is backed by cryptographic fingerprints:
+    1. Raw data manifest computes a deterministic 64-character SHA-256 fingerprint.
+    2. Modifying a single traded value alters the manifest fingerprint even if row counts match.
+    3. Code revision accurately captures git revision (or dirty source hash).
+    4. Universe snapshot embeds the manifest hash and code revision.
+    """
+    from signal_atlas.universe.provenance import compute_raw_data_manifest, get_code_revision
+
+    with get_db() as db:
+        m1 = compute_raw_data_manifest(db)
+
+        assert len(m1.manifest_fingerprint) == 64, (
+            f"Manifest fingerprint must be 64-char full SHA-256, got {len(m1.manifest_fingerprint)}"
+        )
+        assert m1.prices_row_count >= 0
+
+        # Check code revision resolution
+        rev = get_code_revision()
+        assert len(rev) >= 7
+
+        # Insert an instrument, symbol history, and synthetic price record
+        run_id = db.execute(text("SELECT run_id FROM ingestion_runs LIMIT 1")).scalar() or "test-prov-run"
+        db.add(Instrument(
+            instrument_id="inst-prov-test",
+            name="Provenance Test Corp",
+            status="ACTIVE",
+            first_observed_trade_date=datetime.date(2022, 1, 3),
+        ))
+        db.add(InstrumentSymbolHistory(
+            instrument_id="inst-prov-test",
+            symbol="PROVTEST",
+            isin="INE999PROV01",
+            series="EQ",
+            valid_from=datetime.date(2022, 1, 3),
+            valid_to=None,
+        ))
+        db.add(DailyPriceRaw(
+            instrument_id="inst-prov-test",
+            trade_date=datetime.date(2024, 7, 22),
+            series="EQ",
+            open=Decimal("100.00"),
+            high=Decimal("105.00"),
+            low=Decimal("95.00"),
+            close=Decimal("102.00"),
+            last=Decimal("102.00"),
+            prev_close=Decimal("100.00"),
+            volume=1000,
+            traded_value=Decimal("102000.00"),
+            trades_count=10,
+            ingestion_run_id=run_id,
+        ))
+        db.commit()
+
+        try:
+            m2 = compute_raw_data_manifest(db)
+            assert m2.manifest_fingerprint != m1.manifest_fingerprint
+            assert m2.prices_row_count == m1.prices_row_count + 1
+
+            # Modify traded value without changing row count
+            db.execute(text("""
+                UPDATE daily_prices_raw
+                SET traded_value = :tv
+                WHERE instrument_id = 'inst-prov-test'
+            """), {"tv": Decimal("999999.00")})
+            db.commit()
+
+            m3 = compute_raw_data_manifest(db)
+            # Row counts between m2 and m3 are identical
+            assert m3.prices_row_count == m2.prices_row_count
+            # But the fingerprint MUST change because data changed!
+            assert m3.manifest_fingerprint != m2.manifest_fingerprint, (
+                "Data manifest fingerprint must change when underlying values change, even if row count is unchanged!"
+            )
+
+            # Build universe and verify snapshot provenance fields
+            snap = universe_service.build_universe(datetime.date(2024, 7, 22), persist=False)
+            assert snap.raw_data_manifest_hash == m3.manifest_fingerprint
+            assert snap.code_revision == rev
+            assert len(snap.config.config_hash) == 64
+
+        finally:
+            db.execute(text("DELETE FROM daily_prices_raw WHERE instrument_id = 'inst-prov-test'"))
+            db.execute(text("DELETE FROM instrument_symbol_history WHERE instrument_id = 'inst-prov-test'"))
+            db.execute(text("DELETE FROM instruments WHERE instrument_id = 'inst-prov-test'"))
             db.commit()

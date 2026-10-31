@@ -12,7 +12,24 @@ _SessionFactory: Optional[sessionmaker[Session]] = None
 
 def get_engine(database_url: Optional[str] = None) -> Engine:
     global _engine
+    import os
+    from sqlalchemy.engine import make_url
+
     url = database_url or settings.database_url
+    if not url:
+        raise ValueError("No database URL provided or configured in settings.")
+
+    # Guard: During test execution, strictly reject any PostgreSQL database not ending in '_test'
+    if "PYTEST_CURRENT_TEST" in os.environ or os.environ.get("TEST_ENVIRONMENT") == "1":
+        if not url.startswith("sqlite"):
+            parsed = make_url(url)
+            db_name = parsed.database or ""
+            if not db_name.endswith("_test"):
+                raise RuntimeError(
+                    f"CRITICAL SAFETY ABORT: Attempted to create database engine for '{db_name}' "
+                    f"during test execution! All database connections in tests must target a database ending with '_test'."
+                )
+
     if _engine is None or database_url is not None:
         engine_kwargs = {}
         if url.startswith("sqlite"):

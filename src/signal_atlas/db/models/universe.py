@@ -28,7 +28,7 @@ class UniverseSnapshotRecord(Base):
     """
     __tablename__ = "universe_snapshots"
 
-    snapshot_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    snapshot_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     as_of_date: Mapped[datetime.date] = mapped_column(Date, nullable=False, index=True)
     config_version: Mapped[str] = mapped_column(String(32), default="1.0", nullable=False)
     config_identifier: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -40,10 +40,11 @@ class UniverseSnapshotRecord(Base):
     min_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     permitted_series: Mapped[str] = mapped_column(String(64), nullable=False)
     adjustment_version: Mapped[str] = mapped_column(String(32), default="v1.4", nullable=False)
-    raw_data_version: Mapped[str] = mapped_column(String(64), default="RAW_NSE_2022_2024_V1", nullable=False)
+    raw_data_version: Mapped[str] = mapped_column(String(128), default="RAW_NSE_2022_2024_V1", nullable=False)
+    raw_data_manifest_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     data_coverage_start: Mapped[datetime.date] = mapped_column(Date, default=datetime.date(2022, 1, 3), nullable=False)
     data_coverage_end: Mapped[datetime.date] = mapped_column(Date, default=datetime.date(2024, 12, 31), nullable=False)
-    code_revision: Mapped[str] = mapped_column(String(64), default="phase-1b-iii.1", nullable=False)
+    code_revision: Mapped[str] = mapped_column(String(128), default="phase-1b-iii.1", nullable=False)
     total_instruments_evaluated: Mapped[int] = mapped_column(Integer, nullable=False)
     eligible_count: Mapped[int] = mapped_column(Integer, nullable=False)
     excluded_count: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -84,7 +85,7 @@ class UniverseMemberRecord(Base):
         autoincrement=True,
     )
     snapshot_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("universe_snapshots.snapshot_id", ondelete="CASCADE"), nullable=False, index=True
+        String(128), ForeignKey("universe_snapshots.snapshot_id", ondelete="CASCADE"), nullable=False, index=True
     )
     instrument_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("instruments.instrument_id", ondelete="RESTRICT"), nullable=False, index=True

@@ -40,40 +40,51 @@ def test_db(test_engine):
         session.close()
 
 
+from signal_atlas.db.safety import validate_test_database_isolation
+
+
+def pytest_configure(config):
+    """
+    Early pytest initialization hook.
+    Validates test database isolation before any test discovery, collection, or execution.
+    Fails immediately if DATABASE_URL and TEST_DATABASE_URL do not match or target non-test databases.
+    """
+    validate_test_database_isolation(settings.database_url, PG_TEST_URL)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def pg_engine():
     """
     Create a connection engine to the local PostgreSQL test database with strict safety guards.
     Ensures that test teardowns and table cleanups can NEVER target the application database.
     """
+    # 1. Enforce strict URL and database name matching
+    validate_test_database_isolation(settings.database_url, PG_TEST_URL)
+
     test_url = make_url(PG_TEST_URL)
-    app_url = make_url(settings.database_url) if settings.database_url else None
-
     test_db = test_url.database or ""
-    app_db = app_url.database if app_url else ""
-
-    # 1. Refuse to run against the configured application database
-    if app_db and test_db == app_db and os.environ.get("ALLOW_DESTRUCTIVE_TESTS") != "1":
-        raise RuntimeError(
-            f"CRITICAL SAFETY ABORT: Test database '{test_db}' matches configured application database! "
-            f"Tests would drop and truncate application tables. "
-            f"Configure a dedicated test database (e.g. 'signal_atlas_test') or set ALLOW_DESTRUCTIVE_TESTS=1."
-        )
-
-    # 2. Require test database name to end with '_test' unless explicitly overridden
-    if not test_db.endswith("_test") and os.environ.get("ALLOW_DESTRUCTIVE_TESTS") != "1":
-        raise RuntimeError(
-            f"CRITICAL SAFETY ABORT: Test database name '{test_db}' must end with '_test' to prevent "
-            f"accidental destruction of production or development data. Override with ALLOW_DESTRUCTIVE_TESTS=1."
-        )
 
     print(f"\n[TEST SUITE TARGET] Isolated integration test database: '{test_db}' on host '{test_url.host}:{test_url.port}'")
+
+    is_ci = os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("CI") == "true"
+    allow_skip = os.environ.get("ALLOW_SKIP_POSTGRES") == "1"
 
     try:
         engine = create_engine(PG_TEST_URL, pool_pre_ping=True)
         # Test connection
         with engine.connect() as conn:
             pass
+    except Exception as e:
+        if is_ci or not allow_skip:
+            pytest.fail(
+                f"PostgreSQL test database connection failed: {e}. "
+                f"In GitHub Actions and standard test runs, infrastructure failures must fail the job. "
+                f"To skip locally when PostgreSQL is not running, set ALLOW_SKIP_POSTGRES=1."
+            )
+        else:
+            pytest.skip(f"PostgreSQL test database not available (ALLOW_SKIP_POSTGRES=1): {e}")
+
+    try:
         import signal_atlas.db.models
         from signal_atlas.providers.nse.calendar import NSETradingCalendar
         from signal_atlas.db.models.calendar import TradingCalendar
@@ -114,29 +125,49 @@ def pg_engine():
             init_session.commit()
 
         yield engine
-        Base.metadata.drop_all(bind=engine)
+        if os.environ.get("DROP_TEST_SCHEMA_AFTER_RUN") == "1":
+            Base.metadata.drop_all(bind=engine)
         engine.dispose()
     except Exception as e:
-        pytest.skip(f"PostgreSQL test database not available: {e}")
+        pytest.fail(f"PostgreSQL test database schema initialization or seeding failed: {e}")
 
 
 @pytest.fixture
 def pg_db(pg_engine):
     """Provide an isolated transactional session for PostgreSQL integration tests."""
+    from signal_atlas.db.models.instruments import Instrument, InstrumentSymbolHistory
+    from signal_atlas.db.models.prices import DailyPriceRaw
+    from signal_atlas.db.models.ingestion import IngestionRun
+    from sqlalchemy import delete, func, select
+
     SessionFactory = sessionmaker(bind=pg_engine, autoflush=False, autocommit=False)
     session = SessionFactory()
     try:
         yield session
     finally:
         session.rollback()
-        # Clean data between integration test runs to ensure isolation (preserve static calendar and seed run)
-        for table in reversed(Base.metadata.sorted_tables):
-            if table.name == "trading_calendar":
-                continue
-            elif table.name == "ingestion_runs":
-                session.execute(table.delete().where(table.c.run_id != "ci-test-run-001"))
-            else:
-                session.execute(table.delete())
+        # Clean synthetic data between integration test runs to ensure isolation
+        # In bulk-populated test databases, preserve the 2-year historical records
+        inst_count = session.execute(select(func.count(Instrument.instrument_id))).scalar() or 0
+        if inst_count > 500:
+            import datetime
+            session.execute(delete(DailyPriceRaw).where(DailyPriceRaw.instrument_id.like("inst-%")))
+            session.execute(delete(DailyPriceRaw).where(DailyPriceRaw.trade_date >= datetime.date(2029, 1, 1)))
+            session.execute(delete(InstrumentSymbolHistory).where(InstrumentSymbolHistory.instrument_id.like("inst-%")))
+            session.execute(delete(InstrumentSymbolHistory).where(InstrumentSymbolHistory.symbol == "ABC"))
+            session.execute(delete(Instrument).where(Instrument.instrument_id.like("inst-%")))
+            session.execute(delete(Instrument).where(Instrument.name == "PRECISION CORP"))
+            session.execute(delete(IngestionRun).where(IngestionRun.run_id.like("test-%")))
+            session.execute(delete(IngestionRun).where(IngestionRun.run_id.like("run-%")))
+            session.execute(delete(IngestionRun).where(IngestionRun.trade_date >= datetime.date(2029, 1, 1)))
+        else:
+            for table in reversed(Base.metadata.sorted_tables):
+                if table.name == "trading_calendar":
+                    continue
+                elif table.name == "ingestion_runs":
+                    session.execute(table.delete().where(table.c.run_id != "ci-test-run-001"))
+                else:
+                    session.execute(table.delete())
         session.commit()
         session.close()
 

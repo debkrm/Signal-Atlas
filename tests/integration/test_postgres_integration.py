@@ -144,13 +144,13 @@ def test_postgres_transaction_rollback_on_failure(tmp_path, pg_db):
     Verify that an ingestion failure rolls back the entire transaction,
     leaving no partial records committed to PostgreSQL.
     """
-    trade_date = datetime.date(2024, 10, 25)
+    trade_date = datetime.date(2029, 10, 25)
     # Generate CSV with valid date in filename but date mismatch inside rows -> fatal validation failure
-    bad_zip = create_sample_udiff_zip(trade_date="2024-10-24")
+    bad_zip = create_sample_udiff_zip(trade_date="2029-10-24")
 
     mock_downloader = MagicMock()
     mock_downloader.download.return_value = (
-        "BhavCopy_NSE_CM_0_0_0_20241025_F_0000.csv.zip",
+        "BhavCopy_NSE_CM_0_0_0_20291025_F_0000.csv.zip",
         bad_zip,
         "https://test.nseindia.com/sample.zip",
     )
@@ -175,12 +175,12 @@ def test_postgres_idempotent_ingestion(tmp_path, pg_db):
     Verify that running ingestion twice against PostgreSQL produces identical row counts
     and skips redundant processing unless force=True.
     """
-    trade_date = datetime.date(2024, 10, 25)
+    trade_date = datetime.date(2029, 10, 25)
     sample_zip = create_sample_udiff_zip(trade_date=str(trade_date))
 
     mock_downloader = MagicMock()
     mock_downloader.download.return_value = (
-        "BhavCopy_NSE_CM_0_0_0_20241025_F_0000.csv.zip",
+        "BhavCopy_NSE_CM_0_0_0_20291025_F_0000.csv.zip",
         sample_zip,
         "https://test.nseindia.com/sample.zip",
     )
@@ -216,8 +216,8 @@ def test_postgres_series_transition_preserves_instrument(tmp_path, pg_db):
     """
     Verify that an instrument moving from EQ to BE retains the same instrument_id in PostgreSQL.
     """
-    d1 = datetime.date(2024, 10, 24)
-    d2 = datetime.date(2024, 10, 25)
+    d1 = datetime.date(2029, 10, 24)
+    d2 = datetime.date(2029, 10, 25)
 
     rec1 = [{"symbol": "ABC", "series": "EQ", "isin": "INE123A01015", "open": "50.0", "high": "52.0", "low": "49.0", "close": "51.0", "prev_close": "48.0", "vol": "100", "val": "5100.0"}]
     rec2 = [{"symbol": "ABC", "series": "BE", "isin": "INE123A01015", "open": "51.0", "high": "53.0", "low": "50.0", "close": "52.0", "prev_close": "51.0", "vol": "200", "val": "10400.0"}]
@@ -235,7 +235,9 @@ def test_postgres_series_transition_preserves_instrument(tmp_path, pg_db):
     mock_downloader.download.return_value = ("d2.zip", zip2, "http://d2")
     pipeline.ingest_date(trade_date=d2, session=pg_db)
 
-    instruments = pg_db.execute(select(Instrument)).scalars().all()
+    instruments = pg_db.execute(
+        select(Instrument).join(InstrumentSymbolHistory).where(InstrumentSymbolHistory.isin == "INE123A01015").distinct()
+    ).scalars().all()
     assert len(instruments) == 1
     inst_id = instruments[0].instrument_id
 
