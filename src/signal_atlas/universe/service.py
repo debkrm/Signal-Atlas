@@ -1,5 +1,5 @@
 import datetime
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from decimal import Decimal
 import json
 from pathlib import Path
@@ -147,379 +147,377 @@ class PointInTimeUniverseService:
         cfg = self._bind_manifest(config, raw_manifest)
         db = session
 
-        # Preserve the original calculation block's scope without opening a new transaction.
-        with nullcontext():
-            # 0. Validate as_of_date against coverage bounds and trading calendar
-            if as_of_date > cfg.data_coverage_end:
-                raise ValueError(
-                    f"Requested as_of_date {as_of_date} exceeds data coverage boundary {cfg.data_coverage_end}."
-                )
-            if as_of_date < cfg.data_coverage_start:
-                raise ValueError(
-                    f"Requested as_of_date {as_of_date} is prior to data coverage start {cfg.data_coverage_start}."
-                )
-
-            cal_max = db.execute(select(func.max(TradingCalendar.trade_date))).scalar()
-            if cal_max is not None and as_of_date > cal_max:
-                raise ValueError(
-                    f"Requested as_of_date {as_of_date} is beyond available trading calendar end {cal_max}."
-                )
-
-            # 1. Determine exact trading session window
-            sessions = self.get_completed_trading_sessions(
-                as_of_date,
-                cfg.lookback_sessions,
-                db,
-                enforce_full_lookback=not cfg.allow_partial_lookback,
+        # 0. Validate as_of_date against coverage bounds and trading calendar
+        if as_of_date > cfg.data_coverage_end:
+            raise ValueError(
+                f"Requested as_of_date {as_of_date} exceeds data coverage boundary {cfg.data_coverage_end}."
             )
-            if not sessions:
-                raise ValueError(f"No completed trading sessions found on or before {as_of_date}")
+        if as_of_date < cfg.data_coverage_start:
+            raise ValueError(
+                f"Requested as_of_date {as_of_date} is prior to data coverage start {cfg.data_coverage_start}."
+            )
 
-            actual_lookback_count = len(sessions)
-            if not cfg.allow_partial_lookback and actual_lookback_count != cfg.lookback_sessions:
-                raise ValueError(
-                    f"Incomplete lookback window for {as_of_date}: found {actual_lookback_count} sessions, "
-                    f"exactly {cfg.lookback_sessions} required (partial lookback not allowed)."
-                )
-            start_date = sessions[0]
-            end_date = sessions[-1]
+        cal_max = db.execute(select(func.max(TradingCalendar.trade_date))).scalar()
+        if cal_max is not None and as_of_date > cal_max:
+            raise ValueError(
+                f"Requested as_of_date {as_of_date} is beyond available trading calendar end {cal_max}."
+            )
 
-            # 2. Identify quarantined instruments
-            quarantined = get_quarantined_unresolved_instruments(db)
-            quarantined_ids = set(quarantined.keys())
+        # 1. Determine exact trading session window
+        sessions = self.get_completed_trading_sessions(
+            as_of_date,
+            cfg.lookback_sessions,
+            db,
+            enforce_full_lookback=not cfg.allow_partial_lookback,
+        )
+        if not sessions:
+            raise ValueError(f"No completed trading sessions found on or before {as_of_date}")
 
-            # 3. Resolve Point-in-Time Symbol and ISIN for all instruments
-            # An instrument's symbol/ISIN as of as_of_date is resolved through instrument_symbol_history
-            sym_sql = text("""
-                SELECT
-                    instrument_id, symbol, isin, series, valid_from, valid_to
-                FROM instrument_symbol_history
-                WHERE valid_from <= :as_of_date
-                  AND (valid_to IS NULL OR valid_to >= :as_of_date)
-                ORDER BY instrument_id, valid_from DESC
-            """)
-            sym_rows = db.execute(sym_sql, {"as_of_date": as_of_date}).mappings().all()
-            sym_by_inst: Dict[str, List[Dict[str, Any]]] = {}
-            for r in sym_rows:
-                sym_by_inst.setdefault(r["instrument_id"], []).append(dict(r))
+        actual_lookback_count = len(sessions)
+        if not cfg.allow_partial_lookback and actual_lookback_count != cfg.lookback_sessions:
+            raise ValueError(
+                f"Incomplete lookback window for {as_of_date}: found {actual_lookback_count} sessions, "
+                f"exactly {cfg.lookback_sessions} required (partial lookback not allowed)."
+            )
+        start_date = sessions[0]
+        end_date = sessions[-1]
 
-            # Also load instrument master metadata (listing_date, first_observed_trade_date, delisting_date)
-            inst_sql = text("""
-                SELECT instrument_id, listing_date, first_observed_trade_date, delisting_date, status
-                FROM instruments
-            """)
-            inst_rows = db.execute(inst_sql).mappings().all()
-            inst_meta: Dict[str, Dict[str, Any]] = {
-                r["instrument_id"]: dict(r) for r in inst_rows
-            }
+        # 2. Identify quarantined instruments
+        quarantined = get_quarantined_unresolved_instruments(db)
+        quarantined_ids = set(quarantined.keys())
 
-            # 4. Aggregate Trailing Traded Value and Observation Counts in Lookback Window
-            # Permitted series check in the raw trade data query
-            series_list = list(cfg.permitted_series)
-            if cfg.include_sme and "SM" not in series_list:
-                series_list.append("SM")
+        # 3. Resolve Point-in-Time Symbol and ISIN for all instruments
+        # An instrument's symbol/ISIN as of as_of_date is resolved through instrument_symbol_history
+        sym_sql = text("""
+            SELECT
+                instrument_id, symbol, isin, series, valid_from, valid_to
+            FROM instrument_symbol_history
+            WHERE valid_from <= :as_of_date
+              AND (valid_to IS NULL OR valid_to >= :as_of_date)
+            ORDER BY instrument_id, valid_from DESC
+        """)
+        sym_rows = db.execute(sym_sql, {"as_of_date": as_of_date}).mappings().all()
+        sym_by_inst: Dict[str, List[Dict[str, Any]]] = {}
+        for r in sym_rows:
+            sym_by_inst.setdefault(r["instrument_id"], []).append(dict(r))
 
-            agg_sql = text("""
-                WITH stats AS (
-                    SELECT
-                        instrument_id,
-                        count(DISTINCT trade_date) as observed_sessions,
-                        sum(traded_value) as total_turnover,
-                        count(traded_value) as valid_turnover_sessions,
-                        count(*) FILTER (WHERE traded_value IS NULL) as null_turnover_count,
-                        count(*) FILTER (WHERE traded_value = 0) as zero_turnover_count,
-                        count(*) FILTER (WHERE traded_value > 0) as positive_turnover_count,
-                        percentile_cont(0.5) WITHIN GROUP (ORDER BY traded_value) as median_turnover
-                    FROM daily_prices_raw
-                    WHERE trade_date >= :start_date AND trade_date <= :end_date
-                      AND series = ANY(:series_list)
-                    GROUP BY instrument_id
-                ),
-                latest_prices AS (
-                    SELECT DISTINCT ON (instrument_id)
-                        instrument_id,
-                        close as latest_raw_close,
-                        trade_date as latest_observed_date,
-                        series as latest_series
-                    FROM daily_prices_raw
-                    WHERE trade_date >= :start_date AND trade_date <= :end_date
-                      AND series = ANY(:series_list)
-                    ORDER BY instrument_id, trade_date DESC
-                )
-                SELECT
-                    s.*,
-                    lp.latest_raw_close,
-                    lp.latest_observed_date,
-                    lp.latest_series
-                FROM stats s
-                JOIN latest_prices lp ON s.instrument_id = lp.instrument_id
-            """)
-            trade_rows = db.execute(
-                agg_sql,
-                {
-                    "start_date": start_date,
-                    "end_date": end_date,
-                    "series_list": series_list,
-                },
-            ).mappings().all()
+        # Also load instrument master metadata (listing_date, first_observed_trade_date, delisting_date)
+        inst_sql = text("""
+            SELECT instrument_id, listing_date, first_observed_trade_date, delisting_date, status
+            FROM instruments
+        """)
+        inst_rows = db.execute(inst_sql).mappings().all()
+        inst_meta: Dict[str, Dict[str, Any]] = {
+            r["instrument_id"]: dict(r) for r in inst_rows
+        }
 
-            trade_stats: Dict[str, Dict[str, Any]] = {
-                r["instrument_id"]: dict(r) for r in trade_rows
-            }
+        # 4. Aggregate Trailing Traded Value and Observation Counts in Lookback Window
+        # Permitted series check in the raw trade data query
+        series_list = list(cfg.permitted_series)
+        if cfg.include_sme and "SM" not in series_list:
+            series_list.append("SM")
 
-            # Query trade evidence per series in the lookback window up to as_of_date
-            series_trades_sql = text("""
+        agg_sql = text("""
+            WITH stats AS (
                 SELECT
                     instrument_id,
-                    series,
-                    max(trade_date) as latest_trade_date
+                    count(DISTINCT trade_date) as observed_sessions,
+                    sum(traded_value) as total_turnover,
+                    count(traded_value) as valid_turnover_sessions,
+                    count(*) FILTER (WHERE traded_value IS NULL) as null_turnover_count,
+                    count(*) FILTER (WHERE traded_value = 0) as zero_turnover_count,
+                    count(*) FILTER (WHERE traded_value > 0) as positive_turnover_count,
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY traded_value) as median_turnover
                 FROM daily_prices_raw
                 WHERE trade_date >= :start_date AND trade_date <= :end_date
                   AND series = ANY(:series_list)
-                GROUP BY instrument_id, series
-            """)
-            st_rows = db.execute(
-                series_trades_sql,
-                {
-                    "start_date": start_date,
-                    "end_date": end_date,
-                    "series_list": series_list,
-                },
-            ).mappings().all()
+                GROUP BY instrument_id
+            ),
+            latest_prices AS (
+                SELECT DISTINCT ON (instrument_id)
+                    instrument_id,
+                    close as latest_raw_close,
+                    trade_date as latest_observed_date,
+                    series as latest_series
+                FROM daily_prices_raw
+                WHERE trade_date >= :start_date AND trade_date <= :end_date
+                  AND series = ANY(:series_list)
+                ORDER BY instrument_id, trade_date DESC
+            )
+            SELECT
+                s.*,
+                lp.latest_raw_close,
+                lp.latest_observed_date,
+                lp.latest_series
+            FROM stats s
+            JOIN latest_prices lp ON s.instrument_id = lp.instrument_id
+        """)
+        trade_rows = db.execute(
+            agg_sql,
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "series_list": series_list,
+            },
+        ).mappings().all()
 
-            series_latest_trade: Dict[Tuple[str, str], datetime.date] = {
-                (r["instrument_id"], r["series"]): r["latest_trade_date"]
-                for r in st_rows
-            }
+        trade_stats: Dict[str, Dict[str, Any]] = {
+            r["instrument_id"]: dict(r) for r in trade_rows
+        }
 
-            # Resolve PIT identity deterministically backed by contemporaneous trade evidence
-            # within record validity interval or source-backed interval evidence (valid_from DESC)
-            pit_symbols: Dict[str, Dict[str, Any]] = {}
-            ambiguous_instruments: Set[str] = set()
+        # Query trade evidence per series in the lookback window up to as_of_date
+        series_trades_sql = text("""
+            SELECT
+                instrument_id,
+                series,
+                max(trade_date) as latest_trade_date
+            FROM daily_prices_raw
+            WHERE trade_date >= :start_date AND trade_date <= :end_date
+              AND series = ANY(:series_list)
+            GROUP BY instrument_id, series
+        """)
+        st_rows = db.execute(
+            series_trades_sql,
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "series_list": series_list,
+            },
+        ).mappings().all()
 
-            for iid, records in sym_by_inst.items():
-                if len(records) == 1:
-                    pit_symbols[iid] = records[0]
-                else:
-                    # Multiple valid records exist on as_of_date (e.g. overlapping EQ and BE intervals).
-                    max_vf = max(r["valid_from"] for r in records)
+        series_latest_trade: Dict[Tuple[str, str], datetime.date] = {
+            (r["instrument_id"], r["series"]): r["latest_trade_date"]
+            for r in st_rows
+        }
 
-                    # Contemporaneous trade evidence must fall within the record's own validity interval
-                    # and must not be strictly older than the newest transition boundary (max_vf).
-                    candidates_with_trade = []
-                    for rec in records:
-                        s = rec["series"]
-                        latest_td = series_latest_trade.get((iid, s))
-                        vt = rec["valid_to"]
-                        eff_end = min(as_of_date, vt) if vt is not None else as_of_date
-                        if (
-                            latest_td is not None
-                            and rec["valid_from"] <= latest_td <= eff_end
-                            and latest_td >= max_vf
-                        ):
-                            candidates_with_trade.append((rec, latest_td))
+        # Resolve PIT identity deterministically backed by contemporaneous trade evidence
+        # within record validity interval or source-backed interval evidence (valid_from DESC)
+        pit_symbols: Dict[str, Dict[str, Any]] = {}
+        ambiguous_instruments: Set[str] = set()
 
-                    chosen = None
-                    if candidates_with_trade:
-                        # Sort by latest_trade_date desc, then valid_from desc
-                        candidates_with_trade.sort(key=lambda x: (x[1], x[0]["valid_from"]), reverse=True)
-                        top_td = candidates_with_trade[0][1]
-                        top_tied = [c for c in candidates_with_trade if c[1] == top_td]
-                        if len(top_tied) == 1:
-                            chosen = top_tied[0][0]
-                        else:
-                            # Conflicting records traded on the exact same latest date in different series
-                            ambiguous_instruments.add(iid)
-                            chosen = top_tied[0][0]
+        for iid, records in sym_by_inst.items():
+            if len(records) == 1:
+                pit_symbols[iid] = records[0]
+            else:
+                # Multiple valid records exist on as_of_date (e.g. overlapping EQ and BE intervals).
+                max_vf = max(r["valid_from"] for r in records)
 
-                    if chosen is None:
-                        # No contemporaneous trade evidence on or after max_vf.
-                        # Fallback to source-backed historical interval evidence (latest valid_from).
-                        top_records = [r for r in records if r["valid_from"] == max_vf]
-                        if len(top_records) == 1:
-                            chosen = top_records[0]
-                        else:
-                            # Conflicting records with identical valid_from and no trade evidence
-                            ambiguous_instruments.add(iid)
-                            chosen = top_records[0]
+                # Contemporaneous trade evidence must fall within the record's own validity interval
+                # and must not be strictly older than the newest transition boundary (max_vf).
+                candidates_with_trade = []
+                for rec in records:
+                    s = rec["series"]
+                    latest_td = series_latest_trade.get((iid, s))
+                    vt = rec["valid_to"]
+                    eff_end = min(as_of_date, vt) if vt is not None else as_of_date
+                    if (
+                        latest_td is not None
+                        and rec["valid_from"] <= latest_td <= eff_end
+                        and latest_td >= max_vf
+                    ):
+                        candidates_with_trade.append((rec, latest_td))
 
-                    pit_symbols[iid] = chosen
-
-            # 5. Evaluate All Available Instruments
-            evaluated_members: List[UniverseMember] = []
-            all_candidate_ids = set(pit_symbols.keys()) | set(trade_stats.keys())
-
-            for iid in sorted(all_candidate_ids):
-                sym_info = pit_symbols.get(iid)
-                t_info = trade_stats.get(iid)
-                meta = inst_meta.get(iid, {})
-
-                if sym_info:
-                    symbol = sym_info["symbol"]
-                    isin = sym_info["isin"]
-                    series = sym_info["series"]
-                elif t_info:
-                    symbol = t_info["latest_series"]
-                    isin = ""
-                    series = t_info["latest_series"]
-                else:
-                    continue
-
-                listing_date = meta.get("listing_date")
-                first_observed_date = meta.get("first_observed_trade_date")
-                delisting_date = meta.get("delisting_date")
-
-                if t_info:
-                    obs_count = t_info["observed_sessions"]
-                    missing_count = max(0, actual_lookback_count - obs_count)
-                    completeness = min(
-                        Decimal("1.0000"),
-                        (Decimal(obs_count) / Decimal(actual_lookback_count)).quantize(Decimal("0.0001"))
-                    )
-                    tot_turnover = (
-                        Decimal(str(t_info["total_turnover"]))
-                        if t_info["total_turnover"] is not None
-                        else None
-                    )
-                    valid_sessions = t_info["valid_turnover_sessions"]
-                    turnover_completeness = min(
-                        Decimal("1.0000"),
-                        (Decimal(valid_sessions) / Decimal(actual_lookback_count)).quantize(Decimal("0.0001"))
-                    )
-                    # Average Daily Traded Value = total valid turnover / observed valid sessions
-                    if tot_turnover is not None and valid_sessions > 0:
-                        adtv = (tot_turnover / Decimal(valid_sessions)).quantize(
-                            Decimal("0.01")
-                        )
+                chosen = None
+                if candidates_with_trade:
+                    # Sort by latest_trade_date desc, then valid_from desc
+                    candidates_with_trade.sort(key=lambda x: (x[1], x[0]["valid_from"]), reverse=True)
+                    top_td = candidates_with_trade[0][1]
+                    top_tied = [c for c in candidates_with_trade if c[1] == top_td]
+                    if len(top_tied) == 1:
+                        chosen = top_tied[0][0]
                     else:
-                        adtv = None
+                        # Conflicting records traded on the exact same latest date in different series
+                        ambiguous_instruments.add(iid)
+                        chosen = top_tied[0][0]
 
-                    median_turnover = (
-                        Decimal(str(t_info["median_turnover"])).quantize(Decimal("0.01"))
-                        if t_info["median_turnover"] is not None
-                        else None
-                    )
-                    null_cnt = t_info["null_turnover_count"]
-                    zero_cnt = t_info["zero_turnover_count"]
-                    pos_cnt = t_info["positive_turnover_count"]
-                    latest_close = (
-                        Decimal(str(t_info["latest_raw_close"])).quantize(Decimal("0.01"))
-                        if t_info["latest_raw_close"] is not None
-                        else None
+                if chosen is None:
+                    # No contemporaneous trade evidence on or after max_vf.
+                    # Fallback to source-backed historical interval evidence (latest valid_from).
+                    top_records = [r for r in records if r["valid_from"] == max_vf]
+                    if len(top_records) == 1:
+                        chosen = top_records[0]
+                    else:
+                        # Conflicting records with identical valid_from and no trade evidence
+                        ambiguous_instruments.add(iid)
+                        chosen = top_records[0]
+
+                pit_symbols[iid] = chosen
+
+        # 5. Evaluate All Available Instruments
+        evaluated_members: List[UniverseMember] = []
+        all_candidate_ids = set(pit_symbols.keys()) | set(trade_stats.keys())
+
+        for iid in sorted(all_candidate_ids):
+            sym_info = pit_symbols.get(iid)
+            t_info = trade_stats.get(iid)
+            meta = inst_meta.get(iid, {})
+
+            if sym_info:
+                symbol = sym_info["symbol"]
+                isin = sym_info["isin"]
+                series = sym_info["series"]
+            elif t_info:
+                symbol = t_info["latest_series"]
+                isin = ""
+                series = t_info["latest_series"]
+            else:
+                continue
+
+            listing_date = meta.get("listing_date")
+            first_observed_date = meta.get("first_observed_trade_date")
+            delisting_date = meta.get("delisting_date")
+
+            if t_info:
+                obs_count = t_info["observed_sessions"]
+                missing_count = max(0, actual_lookback_count - obs_count)
+                completeness = min(
+                    Decimal("1.0000"),
+                    (Decimal(obs_count) / Decimal(actual_lookback_count)).quantize(Decimal("0.0001"))
+                )
+                tot_turnover = (
+                    Decimal(str(t_info["total_turnover"]))
+                    if t_info["total_turnover"] is not None
+                    else None
+                )
+                valid_sessions = t_info["valid_turnover_sessions"]
+                turnover_completeness = min(
+                    Decimal("1.0000"),
+                    (Decimal(valid_sessions) / Decimal(actual_lookback_count)).quantize(Decimal("0.0001"))
+                )
+                # Average Daily Traded Value = total valid turnover / observed valid sessions
+                if tot_turnover is not None and valid_sessions > 0:
+                    adtv = (tot_turnover / Decimal(valid_sessions)).quantize(
+                        Decimal("0.01")
                     )
                 else:
-                    obs_count = 0
-                    missing_count = actual_lookback_count
-                    completeness = Decimal("0.0000")
-                    valid_sessions = 0
-                    turnover_completeness = Decimal("0.0000")
-                    tot_turnover = None
                     adtv = None
-                    median_turnover = None
-                    null_cnt = 0
-                    zero_cnt = 0
-                    pos_cnt = 0
-                    latest_close = None
 
-                if iid in ambiguous_instruments:
-                    is_elig = False
-                    reason = EligibilityReason.EXCLUDED_AMBIGUOUS_SERIES_HISTORY
-                    detail = "Multiple conflicting series records valid on as-of date cannot be resolved unambiguously"
-                else:
-                    is_elig, reason, detail = evaluate_instrument_eligibility(
-                        instrument_id=iid,
-                        symbol=symbol,
-                        isin=isin,
-                        series=series,
-                        observed_sessions_count=obs_count,
-                        lookback_sessions=actual_lookback_count,
-                        average_daily_turnover=adtv,
-                        median_daily_turnover=median_turnover,
-                        latest_raw_close=latest_close,
-                        as_of_date=as_of_date,
-                        listing_date=listing_date,
-                        delisting_date=delisting_date,
-                        quarantined_instrument_ids=quarantined_ids,
-                        config=cfg,
-                        first_observed_trade_date=first_observed_date,
-                        valid_turnover_sessions_count=valid_sessions,
-                    )
+                median_turnover = (
+                    Decimal(str(t_info["median_turnover"])).quantize(Decimal("0.01"))
+                    if t_info["median_turnover"] is not None
+                    else None
+                )
+                null_cnt = t_info["null_turnover_count"]
+                zero_cnt = t_info["zero_turnover_count"]
+                pos_cnt = t_info["positive_turnover_count"]
+                latest_close = (
+                    Decimal(str(t_info["latest_raw_close"])).quantize(Decimal("0.01"))
+                    if t_info["latest_raw_close"] is not None
+                    else None
+                )
+            else:
+                obs_count = 0
+                missing_count = actual_lookback_count
+                completeness = Decimal("0.0000")
+                valid_sessions = 0
+                turnover_completeness = Decimal("0.0000")
+                tot_turnover = None
+                adtv = None
+                median_turnover = None
+                null_cnt = 0
+                zero_cnt = 0
+                pos_cnt = 0
+                latest_close = None
 
-                member = UniverseMember(
+            if iid in ambiguous_instruments:
+                is_elig = False
+                reason = EligibilityReason.EXCLUDED_AMBIGUOUS_SERIES_HISTORY
+                detail = "Multiple conflicting series records valid on as-of date cannot be resolved unambiguously"
+            else:
+                is_elig, reason, detail = evaluate_instrument_eligibility(
                     instrument_id=iid,
                     symbol=symbol,
                     isin=isin,
                     series=series,
                     observed_sessions_count=obs_count,
-                    missing_sessions_count=missing_count,
-                    trading_completeness=completeness,
-                    expected_lookback_sessions=actual_lookback_count,
-                    valid_turnover_sessions_count=valid_sessions,
-                    turnover_data_completeness=turnover_completeness,
-                    total_turnover=tot_turnover,
+                    lookback_sessions=actual_lookback_count,
                     average_daily_turnover=adtv,
                     median_daily_turnover=median_turnover,
-                    null_turnover_count=null_cnt,
-                    zero_turnover_count=zero_cnt,
-                    positive_turnover_count=pos_cnt,
                     latest_raw_close=latest_close,
-                    is_eligible=is_elig,
-                    exclusion_reason=reason if not is_elig else None,
-                    exclusion_detail=detail if not is_elig else None,
+                    as_of_date=as_of_date,
+                    listing_date=listing_date,
+                    delisting_date=delisting_date,
+                    quarantined_instrument_ids=quarantined_ids,
+                    config=cfg,
+                    first_observed_trade_date=first_observed_date,
+                    valid_turnover_sessions_count=valid_sessions,
                 )
-                evaluated_members.append(member)
 
-            # 6. Rank Eligible Members by ADTV (Descending) & Apply Optional Top-N Cutoff
-            eligible_candidates = [m for m in evaluated_members if m.is_eligible]
-            excluded_candidates = [m for m in evaluated_members if not m.is_eligible]
-
-            # Sort eligible candidates deterministically by ADTV desc, then symbol asc for equal ADTV
-            eligible_candidates.sort(
-                key=lambda m: (-(m.average_daily_turnover or Decimal("0")), m.symbol),
+            member = UniverseMember(
+                instrument_id=iid,
+                symbol=symbol,
+                isin=isin,
+                series=series,
+                observed_sessions_count=obs_count,
+                missing_sessions_count=missing_count,
+                trading_completeness=completeness,
+                expected_lookback_sessions=actual_lookback_count,
+                valid_turnover_sessions_count=valid_sessions,
+                turnover_data_completeness=turnover_completeness,
+                total_turnover=tot_turnover,
+                average_daily_turnover=adtv,
+                median_daily_turnover=median_turnover,
+                null_turnover_count=null_cnt,
+                zero_turnover_count=zero_cnt,
+                positive_turnover_count=pos_cnt,
+                latest_raw_close=latest_close,
+                is_eligible=is_elig,
+                exclusion_reason=reason if not is_elig else None,
+                exclusion_detail=detail if not is_elig else None,
             )
+            evaluated_members.append(member)
 
-            final_eligible: List[UniverseMember] = []
-            for rank_idx, m in enumerate(eligible_candidates, start=1):
-                if cfg.top_n is not None and rank_idx > cfg.top_n:
-                    m.is_eligible = False
-                    m.exclusion_reason = EligibilityReason.EXCLUDED_RANK_CUTOFF
-                    m.exclusion_detail = f"Rank {rank_idx} exceeds top_n cap of {cfg.top_n}"
-                    m.rank = None
-                    excluded_candidates.append(m)
-                else:
-                    m.rank = rank_idx
-                    final_eligible.append(m)
+        # 6. Rank Eligible Members by ADTV (Descending) & Apply Optional Top-N Cutoff
+        eligible_candidates = [m for m in evaluated_members if m.is_eligible]
+        excluded_candidates = [m for m in evaluated_members if not m.is_eligible]
 
-            # Deterministic snapshot ID based on date and canonical config hash
-            snap_id = f"SNAP-{as_of_date.isoformat()}-{cfg.config_hash}"
+        # Sort eligible candidates deterministically by ADTV desc, then symbol asc for equal ADTV
+        eligible_candidates.sort(
+            key=lambda m: (-(m.average_daily_turnover or Decimal("0")), m.symbol),
+        )
 
-            snapshot = UniverseSnapshot(
-                snapshot_id=snap_id,
-                as_of_date=as_of_date,
-                lookback_sessions=actual_lookback_count,
-                lookback_start_date=start_date,
-                lookback_end_date=end_date,
-                config=cfg,
-                config_identifier=cfg.config_identifier,
-                adjustment_version=cfg.adjustment_version,
-                raw_data_version=cfg.raw_data_version,
-                raw_data_manifest_hash=raw_manifest.manifest_fingerprint,
-                raw_data_manifest=raw_manifest.canonical_dict(),
-                data_coverage_start=cfg.data_coverage_start,
-                data_coverage_end=cfg.data_coverage_end,
-                code_revision=cfg.code_revision,
-                total_instruments_evaluated=len(evaluated_members),
-                eligible_count=len(final_eligible),
-                excluded_count=len(excluded_candidates),
-                eligible_members=final_eligible,
-                excluded_members=excluded_candidates,
-            )
+        final_eligible: List[UniverseMember] = []
+        for rank_idx, m in enumerate(eligible_candidates, start=1):
+            if cfg.top_n is not None and rank_idx > cfg.top_n:
+                m.is_eligible = False
+                m.exclusion_reason = EligibilityReason.EXCLUDED_RANK_CUTOFF
+                m.exclusion_detail = f"Rank {rank_idx} exceeds top_n cap of {cfg.top_n}"
+                m.rank = None
+                excluded_candidates.append(m)
+            else:
+                m.rank = rank_idx
+                final_eligible.append(m)
 
-            # 7. Persist Snapshot to Database if requested
-            if persist:
-                self._persist_snapshot_record(snapshot, db)
+        # Deterministic snapshot ID based on date and canonical config hash
+        snap_id = f"SNAP-{as_of_date.isoformat()}-{cfg.config_hash}"
 
-            return snapshot
+        snapshot = UniverseSnapshot(
+            snapshot_id=snap_id,
+            as_of_date=as_of_date,
+            lookback_sessions=actual_lookback_count,
+            lookback_start_date=start_date,
+            lookback_end_date=end_date,
+            config=cfg,
+            config_identifier=cfg.config_identifier,
+            adjustment_version=cfg.adjustment_version,
+            raw_data_version=cfg.raw_data_version,
+            raw_data_manifest_hash=raw_manifest.manifest_fingerprint,
+            raw_data_manifest=raw_manifest.canonical_dict(),
+            data_coverage_start=cfg.data_coverage_start,
+            data_coverage_end=cfg.data_coverage_end,
+            code_revision=cfg.code_revision,
+            total_instruments_evaluated=len(evaluated_members),
+            eligible_count=len(final_eligible),
+            excluded_count=len(excluded_candidates),
+            eligible_members=final_eligible,
+            excluded_members=excluded_candidates,
+        )
+
+        # 7. Persist Snapshot to Database if requested
+        if persist:
+            self._persist_snapshot_record(snapshot, db)
+
+        return snapshot
 
     def _persist_snapshot_record(self, snapshot: UniverseSnapshot, session: Session) -> None:
         """

@@ -1,10 +1,10 @@
 # Signal Atlas Progress
 
 ## Current phase
-Phase 1B-iii.1 — Point-in-Time Universe Data Integrity Closure
+Phase 1B-iii.1.1 — Point-in-Time Universe Isolation and Exact Provenance Closure
 
 ## Status
-Complete (Awaiting Human Review before Phase 2)
+Complete (Awaiting Human Review and Merge of PR #1 before Phase 2)
 
 ## Completed
 - [x] Initialized Git repository and linked to remote `https://github.com/debkrm/Signal-Atlas.git`.
@@ -435,19 +435,58 @@ Complete (Awaiting Human Review before Phase 2)
      - `2024-10-25`: 3,412 evaluated, 1,661 eligible, 1,751 excluded (MIRCELECTR series BE, ADTV ₹2.95 Cr).
      - Exported to `data/universe_checkpoints/` in both JSON and CSV formats.
 
+- [x] **Completed Phase 1B-iii.1.1 (Snapshot Isolation & Cross-Session Cache Closure — 2026-10-31)**:
+  1. **Consistent Snapshot Isolation Implementation**:
+     - Implemented `PointInTimeUniverseService._consistent_snapshot_transaction(db)` in `src/signal_atlas/universe/service.py`.
+     - For PostgreSQL sessions, establishes `REPEATABLE READ` snapshot isolation on idle sessions and verifies it via `conn.get_isolation_level()` and `SHOW transaction_isolation`.
+     - Detects and rejects already-active `READ COMMITTED` transactions with `RuntimeError`, guaranteeing that manifest calculation, cache lookup, universe calculation, and snapshot persistence always execute within a single consistent snapshot.
+     - Accepts already-active caller transactions if they are already in `REPEATABLE READ`.
+  2. **Closed Public Manifest API Boundary**:
+     - Retained strict boundary on public `build_universe()`: removed `raw_manifest` argument so external callers cannot inject arbitrary or stale raw-data manifests.
+     - `build_universe()` computes its own manifest within the verified transaction.
+     - Internal `_build_universe()` helper accepts a manifest only from the verified transaction.
+     - `get_universe()` reuses the manifest computed in its consistent transaction without rescan.
+     - Removed no-op `with nullcontext():` wrapper and unused `nullcontext` import from `service.py`.
+  3. **Caller-Owned Transaction Semantics**:
+     - Retained `session.flush()` in `_persist_snapshot_record()`; eliminated service-level `commit()` to preserve transaction ownership with caller.
+     - Verified that internally managed sessions (`get_db()` with `session=None`) commit on success and rollback on exception.
+     - Verified caller-supplied sessions remain caller-owned without partial commits or unintended rollbacks.
+  4. **Real PostgreSQL Integration Test Suite (`tests/integration/test_postgres_universe_isolation.py`)**:
+     - Added 7 dedicated PostgreSQL integration tests executed against isolated test database `signal_atlas_test`:
+       1. `test_postgres_idle_session_establishes_repeatable_read`: Proves idle session entering helper establishes `REPEATABLE READ` (verified via `conn.get_isolation_level()` and PostgreSQL `SHOW transaction_isolation`).
+       2. `test_postgres_already_active_read_committed_is_rejected`: Proves already-active `READ COMMITTED` transaction raises `RuntimeError`.
+       3. `test_postgres_already_active_repeatable_read_is_accepted`: Proves already-active `REPEATABLE READ` transaction is accepted.
+       4. `test_postgres_caller_ownership_preserved_not_committed_or_closed`: Proves leaving context manager does not commit or close caller session.
+       5. `test_postgres_deterministic_snapshot_consistency_across_two_sessions`: Deterministic two-session snapshot test: Transaction A enters repeatable read and observes synthetic row; Transaction B modifies row and commits; Transaction A still observes original snapshot; Transaction C (new session) observes modified value.
+       6. `test_postgres_cache_persistence_across_commit_and_separate_session`: Proves cache persistence across commit and separate session boundary. Session 1 writes and flushes without committing; observer session cannot see uncommitted snapshot; Session 1 commits and closes; Session 2 opens and loads identical snapshot from cache without invoking builder a second time.
+       7. `test_postgres_internally_managed_get_db_lifecycle`: Proves internally managed `get_db()` commits on success and rolls back on failure.
+  5. **Verification Outcomes**:
+     - Exact unit provenance test suite:
+       `python -m pytest --noconftest -q -p no:cacheprovider tests/unit/test_exact_provenance.py` -> **16 passed in 1.30s**.
+     - Real PostgreSQL isolation integration suite:
+       `pytest -v -s tests/integration/test_postgres_universe_isolation.py` -> **7 passed in 0.69s**.
+     - PostgreSQL engine integration tests:
+       `pytest -v tests/integration/test_postgres_integration.py` -> **5 passed in 21.52s**.
+     - Python compilation & whitespace check:
+       `python -m py_compile src/signal_atlas/universe/service.py tests/unit/test_exact_provenance.py tests/integration/test_postgres_universe_isolation.py` -> clean.
+       `git diff --check` -> clean.
+     - Skipped tests: In isolated CI environments without the uncommitted 2-year bulk historical NSE dataset (1.85M prices, 20k corporate actions), 65 bulk-dependent tests are automatically skipped by `skip_if_missing_bulk_dataset` and `require_historical_dataset_for_bulk_tests`.
+  6. **README Documentation Alignment**:
+     - Qualified absolute "Zero Survivorship Bias" claim in `README.md` to describe point-in-time universe construction with controlled/reduced survivorship bias across verified source coverage.
+  7. **Remaining Limitations**:
+     - None for Phase 1B-iii.1.1. Calculations are deterministic, immutable, and snapshot-isolated.
+
 ### Evidence
-- Checkpoint files generated:
-  - `data/universe_checkpoints/universe_2024-10-25_UNIV-v1.0-L126-ADT5000000-C85-TC80-P10-BE_EQ.json` & `_eligible.csv`
-  - `data/universe_checkpoints/universe_2023-01-02_UNIV-v1.0-L126-ADT5000000-C85-TC80-P10-BE_EQ.json` & `_eligible.csv`
-  - `docs/decisions/0009-point-in-time-liquidity-universe.md` (updated ADR)
-- Database migration applied: `alembic/versions/0011_universe_data_closure.py`
-- Test suite: `pytest` -> **128 passed in 17.94s** (100% pass rate).
+- PostgreSQL integration test suite: `tests/integration/test_postgres_universe_isolation.py` -> **7 passed in 0.69s**.
+- Unit exact-provenance suite: `tests/unit/test_exact_provenance.py` -> **16 passed in 1.30s**.
+- GitHub Actions CI workflow verified: 93 passed, 65 skipped on PR #1 head.
+- Code cleanly compiled with zero whitespace or line-ending errors.
 
 ### Blockers
 - None.
 
 ### Next smallest task
-- Await user review and formal approval of Milestone Phase 1B-iii.1 Point-in-Time Universe Data Integrity Closure before commencing Phase 2 (Indicators and One Strategy). Phase 2 is deliberately not started.
+- Human review and merge of PR #1 (`phase-1b-iii-1/universe-integrity-closure`). Do not start Phase 2 until PR #1 is merged and approved by human owner.
 
 
 

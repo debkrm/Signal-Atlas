@@ -151,6 +151,9 @@ def pg_db(pg_engine):
         inst_count = session.execute(select(func.count(Instrument.instrument_id))).scalar() or 0
         if inst_count > 500:
             import datetime
+            from signal_atlas.db.models.universe import UniverseMemberRecord, UniverseSnapshotRecord
+            session.execute(delete(UniverseMemberRecord).where(UniverseMemberRecord.instrument_id.like("inst-%")))
+            session.execute(delete(UniverseSnapshotRecord).where(UniverseSnapshotRecord.snapshot_id.like("SNAP-TEST-%")))
             session.execute(delete(DailyPriceRaw).where(DailyPriceRaw.instrument_id.like("inst-%")))
             session.execute(delete(DailyPriceRaw).where(DailyPriceRaw.trade_date >= datetime.date(2029, 1, 1)))
             session.execute(delete(InstrumentSymbolHistory).where(InstrumentSymbolHistory.instrument_id.like("inst-%")))
