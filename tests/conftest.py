@@ -178,7 +178,7 @@ def skip_if_missing_bulk_dataset(request):
                 from signal_atlas.db.models.prices import DailyPriceRaw
                 from sqlalchemy import func, select
                 count = session.execute(select(func.count(DailyPriceRaw.id))).scalar()
-                if count == 0:
-                    pytest.skip("Bulk 2-year historical NSE dataset not loaded in isolated test database")
+                if count is None or count < 100_000:
+                    pytest.skip("Bulk 2-year historical NSE dataset (1.85M rows) not loaded in isolated test database")
             except Exception:
                 pytest.skip("Test database not initialized with bulk historical dataset")

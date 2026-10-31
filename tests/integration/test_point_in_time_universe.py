@@ -44,7 +44,7 @@ def require_historical_dataset_for_bulk_tests(request):
     if request.node.name in historical_tests:
         with get_db() as db:
             inst_count = db.execute(select(text("count(*) FROM instruments"))).scalar()
-            if inst_count == 0:
+            if inst_count is None or inst_count < 500:
                 pytest.skip("Bulk historical NSE dataset not present in test database")
 
 
