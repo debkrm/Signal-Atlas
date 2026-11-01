@@ -187,6 +187,7 @@ class ResearchService:
         symbols: Optional[Sequence[str]] = None,
         min_reward_to_risk: Decimal = Decimal("1.50"),
         top_n: int = 15,
+        scan_all: bool = False,
         ignore_regime: bool = False,
         session: Optional[Session] = None,
     ) -> Dict[str, Any]:
@@ -248,6 +249,16 @@ class ResearchService:
                         (InstrumentSymbolHistory.valid_to == None) | (InstrumentSymbolHistory.valid_to >= target_date),
                     )
                     .distinct()
+                )
+            elif scan_all:
+                # Scan all active EQ series instruments on target_date without limiting to top 100 turnover
+                subq = (
+                    select(DailyPriceRaw.instrument_id)
+                    .where(
+                        DailyPriceRaw.trade_date == target_date,
+                        DailyPriceRaw.series == "EQ",
+                    )
+                    .order_by(DailyPriceRaw.traded_value.desc())
                 )
             else:
                 # Pre-filter by liquid volume (at least 20% of min ADTV) ordered by traded_value

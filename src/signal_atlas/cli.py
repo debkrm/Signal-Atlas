@@ -309,6 +309,7 @@ def screen_command(
     strategy: str = typer.Option("trend_pullback", "--strategy", "-s", help="Strategy identifier"),
     date_str: Optional[str] = typer.Option(None, "--date", "-d", help="Market date in YYYY-MM-DD format"),
     top_n: int = typer.Option(15, "--top", "-n", help="Maximum setups to display"),
+    all_stocks: bool = typer.Option(False, "--all", "-a", help="Scan all active traded stocks (unbounded universe scan)"),
     ignore_regime: bool = typer.Option(False, "--ignore-regime", "-i", help="Bypass macro market regime gate for diagnostic screening"),
 ) -> None:
     """
@@ -324,7 +325,13 @@ def screen_command(
 
     svc = ResearchService()
     try:
-        res = svc.screen(strategy_id=strategy, as_of_date=trade_date, top_n=top_n, ignore_regime=ignore_regime)
+        res = svc.screen(
+            strategy_id=strategy,
+            as_of_date=trade_date,
+            top_n=top_n,
+            scan_all=all_stocks,
+            ignore_regime=ignore_regime,
+        )
     except Exception as e:
         console.print(f"[bold red]Screen Failed:[/bold red] {e}")
         raise typer.Exit(code=1)
