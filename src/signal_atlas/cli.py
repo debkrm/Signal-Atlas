@@ -531,6 +531,325 @@ def mcp_command() -> None:
     run_stdio()
 
 
+# -------------------------------------------------------------------------
+# Trade Journal & Paper Trading Sub-CLI
+# -------------------------------------------------------------------------
+journal_app = typer.Typer(help="Trade journal and paper-trading management commands")
+app.add_typer(journal_app, name="journal")
+
+
+@journal_app.command("add")
+def journal_add_command(
+    symbol: str = typer.Argument(..., help="NSE stock symbol (e.g. RELIANCE)"),
+    date_str: str = typer.Option(..., "--date", "-d", help="Signal date (YYYY-MM-DD)"),
+    decision: str = typer.Option("TAKEN", "--decision", help="Decision: TAKEN or SKIPPED"),
+    price: float = typer.Option(..., "--price", "-p", help="Planned entry reference price"),
+    stop: float = typer.Option(..., "--stop", "-s", help="Planned stop loss price"),
+    target: float = typer.Option(..., "--target", "-t", help="Planned target price"),
+    qty: int = typer.Option(..., "--qty", "-q", help="Planned share quantity"),
+    fill_price: Optional[float] = typer.Option(None, "--fill-price", help="Actual manual entry fill price (defaults to planned entry)"),
+    fill_date: Optional[str] = typer.Option(None, "--fill-date", help="Actual fill date (YYYY-MM-DD)"),
+    fill_qty: Optional[int] = typer.Option(None, "--fill-qty", help="Actual fill quantity (defaults to planned qty)"),
+    reason: Optional[str] = typer.Option(None, "--reason", "-r", help="Reason for taking or skipping setup"),
+    notes: Optional[str] = typer.Option(None, "--notes", "-n", help="Trade execution notes"),
+) -> None:
+    """
+    Log a trade decision (TAKEN or SKIPPED) to the paper-trading journal.
+    """
+    try:
+        sig_date = datetime.datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
+    except ValueError:
+        console.print(f"[red]Error:[/red] Invalid signal date '{date_str}'. Expected YYYY-MM-DD.", style="bold")
+        raise typer.Exit(code=1)
+
+    act_entry_dt = None
+    if fill_date:
+        try:
+            act_entry_dt = datetime.datetime.strptime(fill_date.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            console.print(f"[red]Error:[/red] Invalid fill date '{fill_date}'. Expected YYYY-MM-DD.", style="bold")
+            raise typer.Exit(code=1)
+
+    svc = ResearchService()
+    try:
+        res = svc.record_journal_decision(
+            symbol=symbol,
+            signal_date=sig_date,
+            decision=decision,
+            planned_entry_price=Decimal(str(price)),
+            planned_stop_loss=Decimal(str(stop)),
+            planned_target_price=Decimal(str(target)),
+            planned_quantity=qty,
+            decision_reason=reason,
+            actual_entry_date=act_entry_dt,
+            actual_entry_price=Decimal(str(fill_price)) if fill_price is not None else None,
+            actual_quantity=fill_qty,
+            notes=notes,
+        )
+    except Exception as e:
+        console.print(f"[red]Failed to record journal entry:[/red] {e}", style="bold")
+        raise typer.Exit(code=1)
+
+    e = res["result"]
+    console.print(f"\n[green]Journal entry logged successfully![/green] ID: [bold]{e['entry_id']}[/bold]")
+
+    table = Table(title=f"Journal Entry Summary — {e['symbol']} ({e['decision']})", show_header=True, header_style="bold cyan")
+    table.add_column("Property", width=24)
+    table.add_column("Value", width=36)
+
+    table.add_row("Entry ID", e["entry_id"])
+    table.add_row("Symbol", e["symbol"])
+    table.add_row("Signal Date", str(e["signal_date"]))
+    table.add_row("Decision / Status", f"{e['decision']} ({e['status']})")
+    table.add_row("Planned Entry", f"Rs. {Decimal(e['planned_entry_price']):,.2f}")
+    table.add_row("Planned Stop Loss", f"Rs. {Decimal(e['planned_stop_loss']):,.2f}")
+    table.add_row("Planned Target", f"Rs. {Decimal(e['planned_target_price']):,.2f}")
+    table.add_row("Planned Quantity", f"{e['planned_quantity']:,}")
+    table.add_row("Planned Risk", f"Rs. {Decimal(e['planned_risk_amount']):,.2f}")
+    table.add_row("Planned R:R", f"{Decimal(e['planned_reward_to_risk']):.2f}")
+
+    if e.get("actual_entry_price") is not None:
+        table.add_row("Actual Entry Fill", f"Rs. {Decimal(e['actual_entry_price']):,.2f} ({e['actual_entry_date']})")
+        table.add_row("Actual Fill Quantity", f"{e['actual_quantity']:,}")
+        slip = Decimal(e['entry_slippage'])
+        slip_style = "green" if slip <= Decimal("0") else "yellow"
+        table.add_row("Entry Slippage", f"[{slip_style}]Rs. {slip:+,.2f}[/{slip_style}]")
+
+    if e.get("decision_reason"):
+        table.add_row("Decision Reason", e["decision_reason"])
+    if e.get("notes"):
+        table.add_row("Notes", e["notes"])
+
+    console.print(table)
+    console.print()
+
+
+@journal_app.command("close")
+def journal_close_command(
+    entry_id: str = typer.Argument(..., help="Journal entry ID (e.g. JRN-20241024-RELIANCE-abcd1234)"),
+    price: float = typer.Option(..., "--price", "-p", help="Actual manual exit fill price"),
+    date_str: str = typer.Option(..., "--date", "-d", help="Actual exit date (YYYY-MM-DD)"),
+    reason: str = typer.Option("MANUAL", "--reason", "-r", help="Exit reason (PROFIT_TARGET, STOP_LOSS, TIME_STOP, MANUAL)"),
+    notes: Optional[str] = typer.Option(None, "--notes", "-n", help="Post-trade review / exit notes"),
+) -> None:
+    """
+    Close an active OPEN journal trade with manual exit fill and calculate P&L.
+    """
+    try:
+        exit_dt = datetime.datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
+    except ValueError:
+        console.print(f"[red]Error:[/red] Invalid exit date '{date_str}'. Expected YYYY-MM-DD.", style="bold")
+        raise typer.Exit(code=1)
+
+    svc = ResearchService()
+    try:
+        res = svc.close_journal_entry(
+            entry_id=entry_id,
+            exit_date=exit_dt,
+            exit_price=Decimal(str(price)),
+            exit_reason=reason,
+            notes=notes,
+        )
+    except Exception as e:
+        console.print(f"[red]Failed to close journal entry:[/red] {e}", style="bold")
+        raise typer.Exit(code=1)
+
+    e = res["result"]
+    console.print(f"\n[green]Journal trade closed successfully![/green] ID: [bold]{e['entry_id']}[/bold]")
+
+    table = Table(title=f"Trade Realization Summary — {e['symbol']} ({e['status']})", show_header=True, header_style="bold green")
+    table.add_column("Financial Metric", width=24)
+    table.add_column("Realized Value", width=36)
+
+    table.add_row("Symbol", e["symbol"])
+    table.add_row("Holding Duration", f"{e['actual_entry_date']} -> {e['actual_exit_date']}")
+    table.add_row("Entry Fill", f"Rs. {Decimal(e['actual_entry_price']):,.2f} x {e['actual_quantity']:,} shares")
+    table.add_row("Exit Fill", f"Rs. {Decimal(e['actual_exit_price']):,.2f} ({e['exit_reason']})")
+
+    gross_pnl = Decimal(e["realized_gross_pnl"])
+    gross_style = "green" if gross_pnl >= Decimal("0") else "red"
+    table.add_row("Gross P&L", f"[{gross_style}]Rs. {gross_pnl:+,.2f}[/{gross_style}]")
+
+    table.add_row("Transaction Costs", f"Rs. {Decimal(e['realized_costs']):,.2f} (STT, Stamp, Exch, SEBI, GST)")
+
+    net_pnl = Decimal(e["realized_net_pnl"])
+    net_style = "bold green" if net_pnl >= Decimal("0") else "bold red"
+    table.add_row("Net Realized P&L", f"[{net_style}]Rs. {net_pnl:+,.2f}[/{net_style}]")
+
+    pnl_pct = Decimal(e["realized_pnl_pct"]) * Decimal("100.00")
+    table.add_row("Return on Outlay", f"[{net_style}]{pnl_pct:+.2f}%[/{net_style}]")
+
+    r_mult = Decimal(e["realized_r_multiple"])
+    r_style = "bold green" if r_mult >= Decimal("0") else "bold red"
+    table.add_row("Realized R-Multiple", f"[{r_style}]{r_mult:+.2f}R[/{r_style}] (vs planned risk Rs. {Decimal(e['planned_risk_amount']):,.2f})")
+
+    if e.get("notes"):
+        table.add_row("Review Notes", e["notes"])
+
+    console.print(table)
+    console.print()
+
+
+@journal_app.command("list")
+def journal_list_command(
+    status: Optional[str] = typer.Option(None, "--status", "-s", help="Filter by status (OPEN, CLOSED, SKIPPED, CANCELLED)"),
+    symbol: Optional[str] = typer.Option(None, "--symbol", help="Filter by stock symbol"),
+    start_date: Optional[str] = typer.Option(None, "--start", help="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = typer.Option(None, "--end", help="End date (YYYY-MM-DD)"),
+) -> None:
+    """
+    List logged trade decisions and active paper-trading positions.
+    """
+    start_dt = None
+    if start_date:
+        try:
+            start_dt = datetime.datetime.strptime(start_date.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            console.print(f"[red]Error:[/red] Invalid start date '{start_date}'.", style="bold")
+            raise typer.Exit(code=1)
+
+    end_dt = None
+    if end_date:
+        try:
+            end_dt = datetime.datetime.strptime(end_date.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            console.print(f"[red]Error:[/red] Invalid end date '{end_date}'.", style="bold")
+            raise typer.Exit(code=1)
+
+    svc = ResearchService()
+    res = svc.list_journal_entries(
+        status=status,
+        symbol=symbol,
+        start_date=start_dt,
+        end_date=end_dt,
+    )
+    entries = res["result"]["entries"]
+
+    table = Table(title=f"Trade Journal Records ({len(entries)} entries)", show_header=True, header_style="bold magenta")
+    table.add_column("Entry ID", width=22)
+    table.add_column("Date", width=11)
+    table.add_column("Symbol", width=10)
+    table.add_column("Status", width=9)
+    table.add_column("Planned Setup", justify="right")
+    table.add_column("Fill / Exit", justify="right")
+    table.add_column("Net P&L", justify="right")
+    table.add_column("R-Mult", justify="right")
+
+    for e in entries:
+        stat = e["status"]
+        stat_color = "yellow" if stat == "OPEN" else ("green" if stat == "CLOSED" else ("blue" if stat == "SKIPPED" else "dim"))
+
+        plan_desc = f"{Decimal(e['planned_entry_price']):,.2f} | S:{Decimal(e['planned_stop_loss']):,.2f} | T:{Decimal(e['planned_target_price']):,.2f} ({e['planned_quantity']})"
+
+        if stat == "CLOSED":
+            fill_desc = f"{Decimal(e['actual_entry_price']):,.2f} -> {Decimal(e['actual_exit_price']):,.2f}"
+            net = Decimal(e["realized_net_pnl"])
+            net_style = "green" if net >= Decimal("0") else "red"
+            net_str = f"[{net_style}]Rs. {net:+,.2f}[/{net_style}]"
+            r = Decimal(e["realized_r_multiple"])
+            r_str = f"[{net_style}]{r:+.2f}R[/{net_style}]"
+        elif stat == "OPEN":
+            fill_desc = f"Fill: {Decimal(e['actual_entry_price']):,.2f}"
+            net_str = "[yellow]ACTIVE[/yellow]"
+            r_str = "-"
+        elif stat == "SKIPPED":
+            fill_desc = "[blue]SKIPPED[/blue]"
+            net_str = "-"
+            r_str = "-"
+        else:
+            fill_desc = "[dim]CANCELLED[/dim]"
+            net_str = "-"
+            r_str = "-"
+
+        table.add_row(
+            e["entry_id"],
+            str(e["signal_date"]),
+            e["symbol"],
+            f"[{stat_color}]{stat}[/{stat_color}]",
+            plan_desc,
+            fill_desc,
+            net_str,
+            r_str,
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
+@journal_app.command("summary")
+def journal_summary_command(
+    start_date: Optional[str] = typer.Option(None, "--start", help="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = typer.Option(None, "--end", help="End date (YYYY-MM-DD)"),
+) -> None:
+    """
+    Display comprehensive paper-trading performance scorecard and operational evidence.
+    """
+    start_dt = None
+    if start_date:
+        try:
+            start_dt = datetime.datetime.strptime(start_date.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            console.print(f"[red]Error:[/red] Invalid start date '{start_date}'.", style="bold")
+            raise typer.Exit(code=1)
+
+    end_dt = None
+    if end_date:
+        try:
+            end_dt = datetime.datetime.strptime(end_date.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            console.print(f"[red]Error:[/red] Invalid end date '{end_date}'.", style="bold")
+            raise typer.Exit(code=1)
+
+    svc = ResearchService()
+    res = svc.get_journal_summary(start_date=start_dt, end_date=end_dt)
+    s = res["result"]
+
+    table = Table(title="Paper-Trading Performance Scorecard (Architecture Section 12)", show_header=True, header_style="bold cyan")
+    table.add_column("Category", width=24)
+    table.add_column("Metric", width=24)
+    table.add_column("Value", width=20, justify="right")
+
+    # Signals & Activity
+    table.add_row("Signals & Activity", "Total Logged Signals", str(s["total_signals_logged"]))
+    table.add_row("Signals & Activity", "Taken Setups", str(s["taken_count"]))
+    table.add_row("Signals & Activity", "Skipped Setups", str(s["skipped_count"]))
+    table.add_row("Signals & Activity", "Active Open Trades", str(s["open_count"]))
+    table.add_row("Signals & Activity", "Closed Trades", str(s["closed_count"]))
+    table.add_row("Signals & Activity", "Cancelled Trades", str(s["cancelled_count"]))
+
+    # Win / Loss Distribution
+    table.add_row("Win/Loss Stats", "Winning Trades", str(s["win_count"]))
+    table.add_row("Win/Loss Stats", "Losing Trades", str(s["loss_count"]))
+    table.add_row("Win/Loss Stats", "Breakeven Trades", str(s["breakeven_count"]))
+    table.add_row("Win/Loss Stats", "Win Rate", f"[bold]{Decimal(s['win_rate_pct']):.2f}%[/bold]")
+
+    # Financial Performance
+    table.add_row("Financial Realization", "Gross P&L", f"Rs. {Decimal(s['total_gross_pnl']):+,.2f}")
+    table.add_row("Financial Realization", "Total Transaction Costs", f"Rs. {Decimal(s['total_realized_costs']):,.2f}")
+
+    net_pnl = Decimal(s["total_net_pnl"])
+    net_style = "bold green" if net_pnl >= Decimal("0") else "bold red"
+    table.add_row("Financial Realization", "Net Realized P&L", f"[{net_style}]Rs. {net_pnl:+,.2f}[/{net_style}]")
+
+    pf = f"{Decimal(s['profit_factor']):.2f}" if s.get("profit_factor") is not None else "N/A"
+    table.add_row("Financial Realization", "Profit Factor", pf)
+
+    # Multiples & Behavioral Metrics
+    table.add_row("Trade Metrics", "Average Trade P&L", f"Rs. {Decimal(s['avg_trade_pnl']):+,.2f}")
+    table.add_row("Trade Metrics", "Average Win", f"Rs. {Decimal(s['avg_win']):,.2f}")
+    table.add_row("Trade Metrics", "Average Loss", f"Rs. {Decimal(s['avg_loss']):,.2f}")
+
+    avg_r = f"{Decimal(s['avg_r_multiple']):+.2f}R" if s.get("avg_r_multiple") is not None else "N/A"
+    table.add_row("Trade Metrics", "Average Realized R", avg_r)
+    table.add_row("Operational Quality", "Average Holding Duration", f"{Decimal(s['avg_holding_days']):.1f} days")
+    table.add_row("Operational Quality", "Average Entry Slippage", f"Rs. {Decimal(s['avg_entry_slippage']):+,.2f}")
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
 def main() -> None:
     app()
 
