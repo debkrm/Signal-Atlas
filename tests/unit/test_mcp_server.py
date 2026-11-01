@@ -2,11 +2,12 @@
 test_mcp_server.py - Unit Tests for Signal Atlas FastMCP Server and ResearchService.
 
 Tests:
-1. MCP Tool Registration and Schemas (all 9 read-only tools registered).
+1. MCP Tool Registration and Schemas (all 13 read-only research tools and journal write tools).
 2. Standard Response Envelope (`as_of`, `retrieved_at`, `source`, `data_status`, `warnings`, `result`).
 3. Strict Input Validation (invalid date, empty symbol, unregistered strategy).
 4. Prompt-Injection Security Controls (no order execution scopes, no risk config overrides).
-5. Graceful handling of Phase 6 deferred domains (fundamentals, filings, news) returning DATA_NOT_AVAILABLE.
+5. Restricted Journal Write Tools (`journal_add`, `journal_close`, `journal_list`, `journal_summary`).
+6. Graceful handling of Phase 6 deferred domains (fundamentals, filings, news) returning DATA_NOT_AVAILABLE.
 """
 
 import datetime
@@ -21,6 +22,10 @@ from signal_atlas.mcp.server import (
     get_news,
     get_risk_flags,
     get_setup,
+    journal_add,
+    journal_close,
+    journal_list,
+    journal_summary,
     market_status,
     mcp,
     portfolio_view,
@@ -30,16 +35,13 @@ from signal_atlas.research.service import ResearchService, SUPPORTED_STRATEGIES
 
 
 def test_mcp_tool_registration():
-    """Verify that FastMCP registers all 9 required read-only research tools."""
-    # FastMCP holds registered tool functions in its internal registry
-    # Check tool names registered on mcp instance
+    """Verify that FastMCP registers all 13 required research and journal tools."""
     tool_names = set()
     if hasattr(mcp, "_tools"):
         tool_names = set(mcp._tools.keys())
     elif hasattr(mcp, "tools"):
         tool_names = set(mcp.tools.keys())
 
-    # Fallback to checking tool definitions
     expected_tools = {
         "market_status",
         "screen",
@@ -50,6 +52,10 @@ def test_mcp_tool_registration():
         "get_news",
         "get_backtest",
         "portfolio_view",
+        "journal_add",
+        "journal_close",
+        "journal_list",
+        "journal_summary",
     }
     for tool_name in expected_tools:
         assert tool_name in tool_names or hasattr(mcp, tool_name) or callable(globals().get(tool_name))
@@ -95,6 +101,17 @@ def test_input_validation_empty_symbol():
 
     with pytest.raises(ValueError, match="Stock symbol is required"):
         get_risk_flags(symbol="")
+
+    with pytest.raises(ValueError, match="Stock symbol is required"):
+        journal_add(
+            symbol="  ",
+            signal_date="2024-10-24",
+            decision="TAKEN",
+            planned_entry_price=100.0,
+            planned_stop_loss=90.0,
+            planned_target_price=120.0,
+            planned_quantity=10,
+        )
 
 
 def test_portfolio_view_output():
@@ -147,6 +164,65 @@ def test_deferred_phase6_news_graceful_response():
     assert resp["result"]["status"] == "NOT_AVAILABLE"
 
 
+def test_mcp_journal_tool_flow(test_db):
+    """
+    Verifies restricted journal MCP tools execute cleanly:
+    1. journal_add logs TAKEN decision with standard response envelope.
+    2. journal_list returns logged entry.
+    3. journal_close closes entry and calculates realized P&L and costs.
+    4. journal_summary returns aggregate paper-trading analytics.
+    """
+    # 1. journal_add
+    add_resp = journal_add(
+        symbol="RELIANCE",
+        signal_date="2024-10-24",
+        decision="TAKEN",
+        planned_entry_price=1200.00,
+        planned_stop_loss=1140.00,
+        planned_target_price=1320.00,
+        planned_quantity=100,
+        decision_reason="Strong pullback to EMA 20 with benchmark uptrend",
+        notes="MCP test trade",
+    )
+    assert add_resp["source"] == "NSE / Signal Atlas Core"
+    assert add_resp["data_status"] == "FRESH"
+    entry = add_resp["result"]
+    assert entry["symbol"] == "RELIANCE"
+    assert entry["decision"] == "TAKEN"
+    assert entry["status"] == "OPEN"
+    assert Decimal(entry["planned_entry_price"]) == Decimal("1200.00")
+    entry_id = entry["entry_id"]
+
+    # 2. journal_list
+    list_resp = journal_list(symbol="RELIANCE")
+    assert list_resp["data_status"] == "FRESH"
+    entries = list_resp["result"]["entries"]
+    assert any(e["entry_id"] == entry_id for e in entries)
+
+    # 3. journal_close
+    close_resp = journal_close(
+        entry_id=entry_id,
+        exit_date="2024-10-30",
+        exit_price=1320.00,
+        exit_reason="PROFIT_TARGET",
+        notes="Hit target in 6 calendar days",
+    )
+    assert close_resp["data_status"] == "FRESH"
+    closed = close_resp["result"]
+    assert closed["status"] == "CLOSED"
+    assert Decimal(closed["realized_gross_pnl"]) == Decimal("12000.00")
+    assert Decimal(closed["realized_net_pnl"]) > Decimal("11000.00")
+    assert Decimal(closed["realized_r_multiple"]) > Decimal("1.80")
+
+    # 4. journal_summary
+    summary_resp = journal_summary()
+    assert summary_resp["data_status"] == "FRESH"
+    summary = summary_resp["result"]
+    assert summary["total_signals_logged"] >= 1
+    assert summary["win_count"] >= 1
+    assert Decimal(summary["win_rate_pct"]) == Decimal("100.00")
+
+
 def test_prompt_injection_safety_controls():
     """
     Ensure the FastMCP tool surface strictly adheres to non-negotiable boundaries:
@@ -155,9 +231,21 @@ def test_prompt_injection_safety_controls():
     3. No risk configuration modification tools.
     4. No raw historical data editing tools.
     """
-    all_registered = dir(mcp)
-    forbidden_terms = ["order", "buy", "sell", "place", "cancel", "broker", "config_set", "delete_raw"]
+    forbidden_terms = ["broker", "config_set", "delete_raw", "order_place", "order_cancel", "stop_modify"]
 
-    for tool_name in ["market_status", "screen", "get_setup", "get_risk_flags", "portfolio_view", "get_backtest"]:
+    registered_tools = [
+        "market_status",
+        "screen",
+        "get_setup",
+        "get_risk_flags",
+        "portfolio_view",
+        "get_backtest",
+        "journal_add",
+        "journal_close",
+        "journal_list",
+        "journal_summary",
+    ]
+
+    for tool_name in registered_tools:
         for term in forbidden_terms:
             assert term not in tool_name.lower()

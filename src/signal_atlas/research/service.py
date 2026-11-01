@@ -33,6 +33,7 @@ from signal_atlas.risk.models import (
     SurveillanceStatus,
     TradeSetup,
 )
+from signal_atlas.journal.service import JournalService
 from signal_atlas.strategy.models import MarketContext, SignalState, StrategyCandidate
 from signal_atlas.strategy.trend_pullback import TrendPullbackParameters, TrendPullbackStrategy
 
@@ -56,6 +57,7 @@ class ResearchService:
         self.risk_config = risk_config or RiskConfig()
         self.risk_engine = RiskEngine(self.risk_config)
         self.feature_engine = TechnicalFeatureEngine()
+        self.journal_service = JournalService()
 
     def _get_latest_trade_date(self, session: Session) -> Optional[datetime.date]:
         """Returns the most recent trade date recorded in the raw prices table."""
@@ -679,4 +681,137 @@ class ResearchService:
                 "days_scanned": days,
                 "news_items": [],
             },
+        }
+
+    def record_journal_decision(
+        self,
+        symbol: str,
+        signal_date: datetime.date,
+        decision: str,
+        planned_entry_price: Decimal,
+        planned_stop_loss: Decimal,
+        planned_target_price: Decimal,
+        planned_quantity: int,
+        planned_risk_amount: Optional[Decimal] = None,
+        planned_reward_to_risk: Optional[Decimal] = None,
+        decision_reason: Optional[str] = None,
+        actual_entry_date: Optional[datetime.date] = None,
+        actual_entry_price: Optional[Decimal] = None,
+        actual_quantity: Optional[int] = None,
+        strategy_id: str = "trend_pullback",
+        strategy_version: str = "v1.0",
+        notes: Optional[str] = None,
+        tags: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Records a taken or skipped trade decision in the trade journal."""
+        entry = self.journal_service.record_decision(
+            symbol=symbol,
+            signal_date=signal_date,
+            decision=decision,
+            planned_entry_price=planned_entry_price,
+            planned_stop_loss=planned_stop_loss,
+            planned_target_price=planned_target_price,
+            planned_quantity=planned_quantity,
+            planned_risk_amount=planned_risk_amount,
+            planned_reward_to_risk=planned_reward_to_risk,
+            decision_reason=decision_reason,
+            actual_entry_date=actual_entry_date,
+            actual_entry_price=actual_entry_price,
+            actual_quantity=actual_quantity,
+            strategy_id=strategy_id,
+            strategy_version=strategy_version,
+            notes=notes,
+            tags=tags,
+            db=self._external_db,
+        )
+        return {
+            "as_of": str(signal_date),
+            "data_status": "FRESH",
+            "warnings": [],
+            "result": entry.model_dump(mode="json"),
+        }
+
+    def close_journal_entry(
+        self,
+        entry_id: str,
+        exit_date: datetime.date,
+        exit_price: Decimal,
+        exit_reason: str = "MANUAL",
+        notes: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Closes an active journal trade with exit details and calculated financial metrics."""
+        entry = self.journal_service.close_entry(
+            entry_id=entry_id,
+            exit_date=exit_date,
+            exit_price=exit_price,
+            exit_reason=exit_reason,
+            notes=notes,
+            db=self._external_db,
+        )
+        return {
+            "as_of": str(exit_date),
+            "data_status": "FRESH",
+            "warnings": [],
+            "result": entry.model_dump(mode="json"),
+        }
+
+    def cancel_journal_entry(
+        self,
+        entry_id: str,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Cancels an open journal entry."""
+        entry = self.journal_service.cancel_entry(
+            entry_id=entry_id,
+            reason=reason,
+            db=self._external_db,
+        )
+        return {
+            "as_of": str(datetime.date.today()),
+            "data_status": "FRESH",
+            "warnings": [],
+            "result": entry.model_dump(mode="json"),
+        }
+
+    def list_journal_entries(
+        self,
+        status: Optional[str] = None,
+        symbol: Optional[str] = None,
+        start_date: Optional[datetime.date] = None,
+        end_date: Optional[datetime.date] = None,
+    ) -> Dict[str, Any]:
+        """Lists trade journal entries."""
+        entries = self.journal_service.list_entries(
+            status=status,
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            db=self._external_db,
+        )
+        return {
+            "as_of": str(datetime.date.today()),
+            "data_status": "FRESH",
+            "warnings": [],
+            "result": {
+                "count": len(entries),
+                "entries": [e.model_dump(mode="json") for e in entries],
+            },
+        }
+
+    def get_journal_summary(
+        self,
+        start_date: Optional[datetime.date] = None,
+        end_date: Optional[datetime.date] = None,
+    ) -> Dict[str, Any]:
+        """Computes paper-trading performance analytics across closed journal trades."""
+        summary = self.journal_service.get_performance_summary(
+            start_date=start_date,
+            end_date=end_date,
+            db=self._external_db,
+        )
+        return {
+            "as_of": str(datetime.date.today()),
+            "data_status": "FRESH",
+            "warnings": [],
+            "result": summary.model_dump(mode="json"),
         }

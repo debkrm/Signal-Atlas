@@ -1,10 +1,10 @@
 # Signal Atlas Progress
 
 ## Current phase
-Phase 2 — Indicators, Trend-Pullback Swing Strategy, and Realistic Backtesting Engine
+Phase 5 — Trade Journal and Paper Trading
 
 ## Status
-Complete (Awaiting Human Review)
+Complete (Ready for PR & Verification)
 
 
 ## Completed
@@ -572,8 +572,36 @@ Complete (Awaiting Human Review)
      - Integration tests: End-to-end research flow `screen -> get_setup -> get_risk_flags` against PostgreSQL test database verifying parity between ResearchService and FastMCP tool wrappers.
      - Full test suite: 118 tests passing in 6.99s.
 
+- [x] **Completed Phase 5 (Trade Journal and Paper Trading)**:
+  1. **Database Schema & Migration (`src/signal_atlas/db/models/journal.py`, `alembic/versions/0013_trade_journal.py`)**:
+     - `JournalEntryRecord`: Persisted in PostgreSQL and SQLite with indexed `symbol`, `signal_date`, `status`, and `actual_exit_date`.
+     - Tracks planned geometry (entry, stop loss, profit target, quantity, risk amount, R:R), actual fills, slippage, exit metrics, and realized transaction costs.
+     - Alembic migration `0013_trade_journal.py` applied and verified.
+  2. **Domain Models & Service Layer (`src/signal_atlas/journal/models.py`, `service.py`, `__init__.py`)**:
+     - `JournalService`: Pure application service managing trade journal records and paper-trading performance.
+     - `record_decision`: Handles both `TAKEN` and `SKIPPED` setups; defaults execution fills to planned geometry when executed at market open; computes entry execution slippage.
+     - `close_entry`: Closes active `OPEN` positions; calculates statutory Indian cash equity delivery fees via `TransactionCostModel` (STT, stamp duty, exchange turnover fee, SEBI, GST); computes gross P&L, net P&L, P&L %, and realized R-multiples ($R = \text{Net PnL} / \text{Planned Risk}$).
+     - `cancel_entry`: Safely aborts unfilled or invalidated trade orders.
+     - `list_entries`: Flexible filtered query with sorting by signal date descending.
+     - `get_performance_summary`: Aggregates win rate, profit factor, average win/loss, average R-multiple, average holding days, and average entry slippage. Reports paper-trading metrics cleanly separated from backtests.
+  3. **FastMCP Restricted Journal Tools (`src/signal_atlas/mcp/server.py`)**:
+     - `journal_add`: Restricted write tool to record taken or skipped setups into the trade journal.
+     - `journal_close`: Restricted write tool to close open journal positions and calculate realized metrics.
+     - `journal_list`: Read tool for listing journal entries.
+     - `journal_summary`: Read tool for paper-trading performance scorecard.
+     - Adheres strictly to Architecture Section 14.2: zero broker order placement, zero broker holding modification, zero risk parameter overrides, and zero market data mutations.
+  4. **CLI Commands (`src/signal_atlas/cli.py`)**:
+     - `signal-atlas journal add`: Log a trade decision with setup geometry and fill details.
+     - `signal-atlas journal close`: Close an open trade and print full financial realization summary.
+     - `signal-atlas journal list`: Render Rich table of journal records.
+     - `signal-atlas journal summary`: Render Rich paper-trading scorecard table.
+  5. **Verification & Testing (`tests/unit/test_journal.py`, `tests/unit/test_mcp_server.py`, `tests/integration/test_journal_integration.py`)**:
+     - Unit tests: 7 tests in `test_journal.py` + 12 tests in `test_mcp_server.py` verifying state machine transitions, math, slippage, fee calculations, and prompt-injection safety guards.
+     - PostgreSQL Integration tests: 2 tests in `test_journal_integration.py` verifying end-to-end multi-trade lifecycle against PostgreSQL and strict immutability/isolation of market price and corporate action tables.
+     - Full test suite: 240 items collected, 175 passed, 65 skipped (bulk tests on clean DB), 0 failures (100% pass rate).
+
 ### Blockers
 - None.
 
 ### Next smallest task
-- Human review of Phase 4 deliverables on branch `phase-4/mcp-integration` and subsequent merge into `main` before starting Phase 5 (Journal and Paper Trading).
+- Create PR for `phase-5/journal-and-paper-trading` into `main`, verify GitHub Actions CI, and proceed to Phase 6 (News, Filings, and Fundamentals).
