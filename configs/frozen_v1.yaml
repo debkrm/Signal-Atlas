@@ -1,0 +1,36 @@
+strategy_id: trend_pullback
+strategy_version: v1.0-frozen
+frozen_timestamp: '2026-11-01T07:30:11.080331+00:00'
+selection_verdict: 'TUNED: Selected parameter set {''target_atr_multiplier'': ''5.00'',
+  ''target_r_multiple'': ''2.5''} showing robust outperformance across folds.'
+parameters:
+  strategy_id: trend_pullback
+  strategy_version: v1.0
+  require_ema_alignment: true
+  require_price_above_ema50: true
+  max_ema20_distance_pct: '0.04'
+  min_rsi: '40.00'
+  max_rsi: '60.00'
+  require_weekly_trend_bullish: true
+  stop_atr_multiplier: '1.50'
+  target_atr_multiplier: '5.00'
+  min_reward_to_risk: '1.50'
+  max_entry_gap_pct: '0.02'
+  target_r_multiple: '2.5'
+portfolio:
+  starting_capital: 1000000.0
+  risk_per_trade_pct: 0.01
+  max_concurrent_positions: 10
+  max_total_open_risk_pct: 0.06
+  drawdown_killswitch_pct: 0.1
+  killswitch_cooldown_sessions: 20
+costs:
+  brokerage_per_order: 0.0
+  stt_delivery_buy_pct: 0.001
+  stt_delivery_sell_pct: 0.001
+  exchange_txn_fee_pct: 2.97e-05
+  sebi_turnover_fee_pct: 1.0e-06
+  stamp_duty_buy_pct: 0.00015
+  dp_charge_per_scrip: 15.93
+  gst_pct: 0.18
+  base_slippage_bps: 10
