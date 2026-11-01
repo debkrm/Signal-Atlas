@@ -136,31 +136,31 @@ def test_backtest_reporting_output():
     assert result["execution_rules"]["stop_target_ambiguity"] == "Stop first rule enforced"
 
 
-def test_deferred_phase6_fundamentals_graceful_response():
-    """Fundamentals domain must return DATA_NOT_AVAILABLE with advisory notice without error."""
-    resp = get_fundamentals_snapshot(symbol="TCS")
+def test_phase6_fundamentals_negative_evidence_response():
+    """Fundamentals domain must return DATA_NOT_AVAILABLE with negative evidence advisory notice without error."""
+    resp = get_fundamentals_snapshot(symbol="TCS_UNRECORDED")
     assert resp["data_status"] == "DATA_NOT_AVAILABLE"
     assert len(resp["warnings"]) > 0
-    assert "Phase 6" in resp["warnings"][0]
+    assert "Negative evidence rule" in resp["warnings"][0]
     assert resp["result"]["status"] == "NOT_AVAILABLE"
 
 
-def test_deferred_phase6_filings_graceful_response():
-    """Filings domain must return DATA_NOT_AVAILABLE with advisory notice without error."""
-    resp = get_filings(symbol="INFY", days=60)
+def test_phase6_filings_negative_evidence_response():
+    """Filings domain must return DATA_NOT_AVAILABLE with negative evidence advisory notice without error."""
+    resp = get_filings(symbol="INFY_UNRECORDED", days=60)
     assert resp["data_status"] == "DATA_NOT_AVAILABLE"
     assert len(resp["warnings"]) > 0
-    assert "Phase 6" in resp["warnings"][0]
+    assert "Negative evidence rule" in resp["warnings"][0]
     assert resp["result"]["status"] == "NOT_AVAILABLE"
     assert resp["result"]["days_scanned"] == 60
 
 
-def test_deferred_phase6_news_graceful_response():
-    """News domain must return DATA_NOT_AVAILABLE with advisory notice without error."""
-    resp = get_news(symbol="RELIANCE", days=30)
+def test_phase6_news_negative_evidence_response():
+    """News domain must return DATA_NOT_AVAILABLE with negative evidence advisory notice without error."""
+    resp = get_news(symbol="RELIANCE_UNRECORDED", days=30)
     assert resp["data_status"] == "DATA_NOT_AVAILABLE"
     assert len(resp["warnings"]) > 0
-    assert "Phase 6" in resp["warnings"][0]
+    assert "Negative evidence rule" in resp["warnings"][0]
     assert resp["result"]["status"] == "NOT_AVAILABLE"
 
 

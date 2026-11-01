@@ -6,6 +6,11 @@ from signal_atlas.db.models.quarantine import DailyPriceQuarantine
 from signal_atlas.db.models.corporate_actions import CorporateAction
 from signal_atlas.db.models.universe import UniverseSnapshotRecord, UniverseMemberRecord
 from signal_atlas.db.models.journal import JournalEntryRecord
+from signal_atlas.db.models.research_context import (
+    CorporateFilingRecord,
+    CompanyNewsRecord,
+    CompanyFundamentalRecord,
+)
 
 __all__ = [
     "Instrument",
@@ -19,4 +24,7 @@ __all__ = [
     "UniverseSnapshotRecord",
     "UniverseMemberRecord",
     "JournalEntryRecord",
+    "CorporateFilingRecord",
+    "CompanyNewsRecord",
+    "CompanyFundamentalRecord",
 ]

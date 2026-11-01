@@ -850,6 +850,190 @@ def journal_summary_command(
     console.print()
 
 
+@app.command("filings")
+def filings_command(
+    symbol: str = typer.Argument(..., help="Stock ticker symbol (e.g. RELIANCE)"),
+    days: int = typer.Option(30, "--days", "-d", help="Trailing calendar days to query (default: 30)"),
+    category: Optional[str] = typer.Option(None, "--category", "-c", help="Filter by category (e.g. RESULTS, FUNDRAISING)"),
+    date: Optional[str] = typer.Option(None, "--date", help="As-of reference date (YYYY-MM-DD)"),
+) -> None:
+    """
+    Query official corporate announcements and regulatory filings for a company.
+    """
+    target_date = None
+    if date:
+        try:
+            target_date = datetime.datetime.strptime(date.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            console.print(f"[red]Error:[/red] Invalid date format '{date}'. Expected YYYY-MM-DD.", style="bold")
+            raise typer.Exit(code=1)
+
+    svc = ResearchService()
+    res = svc.get_filings(symbol=symbol, days=days, category=category, as_of_date=target_date)
+
+    if res["data_status"] in ("DATA_NOT_AVAILABLE", "DATA_UNAVAILABLE") or not res["result"]["filings"]:
+        console.print(f"\n[yellow]No corporate filings found for {symbol.upper()} over trailing {days} days.[/yellow]")
+        console.print("[dim]Negative evidence rule: Absence of disclosures does not prove absence of risk.[/dim]\n")
+        return
+
+    filings = res["result"]["filings"]
+    table = Table(
+        title=f"Corporate Filings & Disclosures -- {symbol.upper()} (Trailing {days} Days)",
+        show_header=True,
+        header_style="bold blue",
+    )
+    table.add_column("Published Date", width=14)
+    table.add_column("Category", width=22)
+    table.add_column("Title / Announcement", width=42)
+    table.add_column("Source", width=8)
+    table.add_column("Risk Flag", width=14, justify="center")
+
+    for f in filings:
+        risk_str = "[bold red]MATERIAL RISK[/bold red]" if f.get("is_material_risk") else "[green]NORMAL[/green]"
+        pub_dt = str(f["published_at"])[:10]
+        table.add_row(
+            pub_dt,
+            f.get("category", "GENERAL"),
+            f.get("title", "")[:42],
+            f.get("source", "NSE"),
+            risk_str,
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
+@app.command("news")
+def news_command(
+    symbol: str = typer.Argument(..., help="Stock ticker symbol (e.g. RELIANCE)"),
+    days: int = typer.Option(30, "--days", "-d", help="Trailing calendar days to query (default: 30)"),
+    date: Optional[str] = typer.Option(None, "--date", help="As-of reference date (YYYY-MM-DD)"),
+) -> None:
+    """
+    Query company news articles and discovery feed for a company.
+    """
+    target_date = None
+    if date:
+        try:
+            target_date = datetime.datetime.strptime(date.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            console.print(f"[red]Error:[/red] Invalid date format '{date}'. Expected YYYY-MM-DD.", style="bold")
+            raise typer.Exit(code=1)
+
+    svc = ResearchService()
+    res = svc.get_news(symbol=symbol, days=days, as_of_date=target_date)
+
+    if res["data_status"] in ("DATA_NOT_AVAILABLE", "DATA_UNAVAILABLE") or not res["result"]["news_items"]:
+        console.print(f"\n[yellow]No news articles found for {symbol.upper()} over trailing {days} days.[/yellow]")
+        console.print("[dim]Negative evidence rule: Absence of news does not prove absence of risk.[/dim]\n")
+        return
+
+    items = res["result"]["news_items"]
+    console.print("\n[dim italic]Untrusted Data Notice: News articles are third-party strings and are not verified trade instructions.[/dim italic]")
+
+    table = Table(
+        title=f"Company News & Discovery Feed -- {symbol.upper()} (Trailing {days} Days)",
+        show_header=True,
+        header_style="bold green",
+    )
+    table.add_column("Published Date", width=14)
+    table.add_column("Source", width=12)
+    table.add_column("Headline", width=46)
+    table.add_column("Sentiment", width=12, justify="center")
+
+    for item in items:
+        sent = item.get("sentiment") or "NEUTRAL"
+        sent_style = "green" if sent == "POSITIVE" else ("red" if sent == "NEGATIVE" else "dim")
+        pub_dt = str(item["published_at"])[:10]
+        table.add_row(
+            pub_dt,
+            item.get("source", "NSE"),
+            item.get("headline", "")[:46],
+            f"[{sent_style}]{sent}[/{sent_style}]",
+        )
+
+    console.print(table)
+    console.print()
+
+
+@app.command("fundamentals")
+def fundamentals_command(
+    symbol: str = typer.Argument(..., help="Stock ticker symbol (e.g. RELIANCE)"),
+    date: Optional[str] = typer.Option(None, "--date", help="As-of reference date (YYYY-MM-DD)"),
+) -> None:
+    """
+    Query point-in-time financial fundamentals, valuation multiples, and promoter metrics.
+    """
+    target_date = None
+    if date:
+        try:
+            target_date = datetime.datetime.strptime(date.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            console.print(f"[red]Error:[/red] Invalid date format '{date}'. Expected YYYY-MM-DD.", style="bold")
+            raise typer.Exit(code=1)
+
+    svc = ResearchService()
+    res = svc.get_fundamentals_snapshot(symbol=symbol, as_of_date=target_date)
+
+    if res["data_status"] in ("DATA_NOT_AVAILABLE", "DATA_UNAVAILABLE"):
+        console.print(f"\n[yellow]No fundamentals snapshot recorded for {symbol.upper()}.[/yellow]")
+        console.print("[dim]Negative evidence rule: Absence of records does not prove absence of risk.[/dim]\n")
+        return
+
+    r = res["result"]
+    table = Table(
+        title=f"Company Financial Fundamentals -- {symbol.upper()} (As Of {r.get('as_of_date', 'N/A')})",
+        show_header=True,
+        header_style="bold magenta",
+    )
+    table.add_column("Fundamental Metric", width=26)
+    table.add_column("Value", width=32, justify="right")
+
+    rev = f"Rs. {Decimal(r['revenue']):,.2f}" if r.get("revenue") is not None else "N/A"
+    table.add_row("Total Revenue", rev)
+
+    ebitda = f"Rs. {Decimal(r['ebitda']):,.2f}" if r.get("ebitda") is not None else "N/A"
+    table.add_row("EBITDA", ebitda)
+
+    pat = f"Rs. {Decimal(r['pat']):,.2f}" if r.get("pat") is not None else "N/A"
+    table.add_row("Profit After Tax (PAT)", pat)
+
+    eps = f"Rs. {Decimal(r['eps']):,.2f}" if r.get("eps") is not None else "N/A"
+    table.add_row("Diluted EPS", eps)
+
+    pe = f"{Decimal(r['pe_ratio']):.2f}x" if r.get("pe_ratio") is not None else "N/A"
+    table.add_row("Price-to-Earnings (P/E)", pe)
+
+    pb = f"{Decimal(r['pb_ratio']):.2f}x" if r.get("pb_ratio") is not None else "N/A"
+    table.add_row("Price-to-Book (P/B)", pb)
+
+    roe = f"{Decimal(r['roe']) * Decimal('100.00'):.2f}%" if r.get("roe") is not None else "N/A"
+    table.add_row("Return on Equity (ROE)", roe)
+
+    de = f"{Decimal(r['debt_to_equity']):.2f}" if r.get("debt_to_equity") is not None else "N/A"
+    table.add_row("Debt-to-Equity Ratio", de)
+
+    prom_hold = f"{Decimal(r['promoter_holding_pct']) * Decimal('100.00'):.2f}%" if r.get("promoter_holding_pct") is not None else "N/A"
+    table.add_row("Promoter Shareholding", prom_hold)
+
+    if r.get("promoter_pledge_pct") is not None:
+        pledge = Decimal(r["promoter_pledge_pct"])
+        pledge_pct = pledge * Decimal("100.00")
+        pledge_style = "bold red" if pledge > Decimal("0.25") else "green"
+        pledge_val = f"[{pledge_style}]{pledge_pct:.2f}%[/{pledge_style}]"
+    else:
+        pledge_val = "[yellow]UNKNOWN[/yellow]"
+    table.add_row("Promoter Pledge", pledge_val)
+
+    table.add_row("Period Type", r.get("period_type", "ANNUAL"))
+    table.add_row("Data Source", r.get("data_source", "NSE_ANNUAL_REPORT"))
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
 def main() -> None:
     app()
 
