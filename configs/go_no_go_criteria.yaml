@@ -41,3 +41,4 @@ criteria:
     min_plateau_retention_pct: 0.70
     require_variant_c_positive: true
     description: "Plateau neighbor retention >= 70% and entry-variant C (limit order) positive."
+

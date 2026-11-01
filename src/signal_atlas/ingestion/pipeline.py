@@ -380,11 +380,14 @@ class IngestionPipeline:
 
             if not inst_id:
                 inst_id = str(uuid.uuid4())
+                # Pre-existing instruments prior to dataset start have unknown listing date
+                is_dataset_start = (trade_date <= datetime.date(2022, 1, 3))
                 new_inst = Instrument(
                     instrument_id=inst_id,
                     name=rec.name,
                     status="ACTIVE",
-                    listing_date=trade_date,
+                    listing_date=None if is_dataset_start else trade_date,
+                    first_observed_trade_date=trade_date,
                 )
                 db.add(new_inst)
                 if rec.isin:

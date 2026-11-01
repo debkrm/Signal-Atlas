@@ -1,8 +1,8 @@
 strategy_id: trend_pullback
 strategy_version: v1.0-frozen
-frozen_timestamp: '2026-11-01T07:30:11.080331+00:00'
-selection_verdict: 'TUNED: Selected parameter set {''target_atr_multiplier'': ''5.00'',
-  ''target_r_multiple'': ''2.5''} showing robust outperformance across folds.'
+frozen_timestamp: '2026-11-01T11:14:51.988949+00:00'
+selection_verdict: 'TUNED: Selected parameter set {''stop_atr_multiplier'': Decimal(''2.0''),
+  ''target_r_multiple'': Decimal(''1.5'')} satisfying all 4 pre-registered criteria.'
 parameters:
   strategy_id: trend_pullback
   strategy_version: v1.0
@@ -12,11 +12,11 @@ parameters:
   min_rsi: '40.00'
   max_rsi: '60.00'
   require_weekly_trend_bullish: true
-  stop_atr_multiplier: '1.50'
-  target_atr_multiplier: '5.00'
+  stop_atr_multiplier: '2.0'
+  target_atr_multiplier: '3.00'
+  target_r_multiple: '1.5'
   min_reward_to_risk: '1.50'
   max_entry_gap_pct: '0.02'
-  target_r_multiple: '2.5'
 portfolio:
   starting_capital: 1000000.0
   risk_per_trade_pct: 0.01

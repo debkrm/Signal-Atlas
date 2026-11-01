@@ -12,7 +12,9 @@ Provides deterministic, interface-independent quantitative research operations:
 
 import datetime
 from decimal import Decimal
+import json
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
@@ -287,20 +289,43 @@ class ResearchService:
                     .order_by(DailyPriceRaw.traded_value.desc())
                 )
             else:
-                # Pre-filter by liquid volume (at least 20% of min ADTV) ordered by traded_value
-                min_daily_turnover = self.risk_config.min_adtv * Decimal("0.20")
-                subq = (
-                    select(DailyPriceRaw.instrument_id)
-                    .where(
-                        DailyPriceRaw.trade_date == target_date,
-                        DailyPriceRaw.series == "EQ",
-                        DailyPriceRaw.traded_value >= min_daily_turnover,
-                    )
-                    .order_by(DailyPriceRaw.traded_value.desc())
-                    .limit(100)
-                )
+                # Point-in-Time universe as of target_date (Task 15)
+                pit_cache_path = Path("data/pit_universe_monthly_2022_2024.json")
+                pit_insts = None
+                if pit_cache_path.exists():
+                    try:
+                        pit_data = json.loads(pit_cache_path.read_text(encoding="utf-8"))
+                        snapshots = pit_data.get("snapshots", {})
+                        sorted_rebal = sorted(datetime.date.fromisoformat(k) for k in snapshots.keys())
+                        valid_rebals = [rd for rd in sorted_rebal if rd <= target_date]
+                        if valid_rebals:
+                            latest_rd = valid_rebals[-1]
+                            pit_insts = snapshots[latest_rd.isoformat()]["instrument_ids"]
+                    except Exception:
+                        pit_insts = None
 
-            active_inst_ids = db.execute(subq).scalars().all()
+                if pit_insts:
+                    active_inst_ids = list(pit_insts)
+                else:
+                    try:
+                        from signal_atlas.universe.service import PointInTimeUniverseService
+                        u_svc = PointInTimeUniverseService(db=db)
+                        u_snap = u_svc.get_universe(target_date, session=db)
+                        active_inst_ids = u_snap.get_eligible_instrument_ids()
+                    except Exception:
+                        min_daily_turnover = self.risk_config.min_adtv * Decimal("0.20")
+                        subq = (
+                            select(DailyPriceRaw.instrument_id)
+                            .where(
+                                DailyPriceRaw.trade_date == target_date,
+                                DailyPriceRaw.series == "EQ",
+                                DailyPriceRaw.traded_value >= min_daily_turnover,
+                            )
+                            .order_by(DailyPriceRaw.traded_value.desc())
+                            .limit(100)
+                        )
+                        active_inst_ids = db.execute(subq).scalars().all()
+
             approved_setups: List[Dict[str, Any]] = []
             screened_count = len(active_inst_ids)
 
@@ -354,10 +379,20 @@ class ResearchService:
                 )
 
                 if setup.is_approved:
-                    approved_setups.append(setup.model_dump(mode="json"))
+                    s_dict = setup.model_dump(mode="json")
+                    s_dict["_adtv"] = float(adtv)
+                    s_dict["_rsi_dist"] = abs(float(features.rsi_14 or Decimal("50.00")) - 50.0)
+                    approved_setups.append(s_dict)
 
-            # Rank by reward-to-risk descending
-            approved_setups.sort(key=lambda s: float(s.get("reward_to_risk", 0)), reverse=True)
+            # Deterministic Ranking (Task 4 / Task 15):
+            # Primary = Trailing ADTV descending; Secondary = RSI distance from 50 ascending
+            approved_setups.sort(
+                key=lambda s: (
+                    -s.get("_adtv", 0.0),
+                    s.get("_rsi_dist", 50.0),
+                    s.get("symbol", ""),
+                )
+            )
             top_setups = approved_setups[:top_n]
 
             return {

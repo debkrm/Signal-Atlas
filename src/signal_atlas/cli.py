@@ -351,7 +351,7 @@ def screen_command(
         console.print("[yellow]No approved trade setups found for the selected date and strategy.[/yellow]\n")
         return
 
-    table = Table(title=f"Top Approved Setups (Ranked by Reward/Risk)", show_header=True, header_style="bold magenta")
+    table = Table(title="Top Approved Setups (Ranked by ADTV & Momentum Quality)", show_header=True, header_style="bold magenta")
     table.add_column("Symbol", style="bold cyan", width=12)
     table.add_column("State", width=8)
     table.add_column("Entry Ref", justify="right", width=11)
