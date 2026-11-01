@@ -1,0 +1,116 @@
+{
+  "description": "Offline read-only market data sample verifying execution prices, stop-outs, targets, and gap-downs for representative trades from reports/v2_baseline_trades.csv",
+  "provenance": {
+    "source": "NSE Cash Equity Bhavcopy / Historical Adjusted Prices",
+    "dataset_version": "v1.4",
+    "verified_at": "2026-11-01"
+  },
+  "trades": [
+    {
+      "trade_id": "TRD-0003",
+      "symbol": "ADANIPOWER",
+      "instrument_id": "ea56179e-a084-4ab5-92a8-179cbf312450",
+      "trade_category": "PROFIT_TARGET_WIN",
+      "entry_date": "2022-03-23",
+      "exit_date": "2022-03-25",
+      "entry_price": 124.70,
+      "exit_price": 141.75,
+      "quantity": 1005,
+      "stop_loss": 114.75,
+      "target_price": 141.75,
+      "realized_r": 1.66,
+      "net_pnl": 16555.24,
+      "holding_sessions": 3,
+      "bars": [
+        {"trade_date": "2022-03-23", "open": 124.70, "high": 129.50, "low": 123.10, "close": 128.40, "volume": 14500000},
+        {"trade_date": "2022-03-24", "open": 129.00, "high": 136.20, "low": 128.50, "close": 135.00, "volume": 18200000},
+        {"trade_date": "2022-03-25", "open": 136.50, "high": 141.75, "low": 136.00, "close": 141.75, "volume": 25100000}
+      ],
+      "execution_verification": {
+        "entry_rule": "Session open 124.70 matched planned entry reference",
+        "exit_rule": "High reached target price 141.75 on 2022-03-25; filled at 141.75",
+        "arithmetic_reconciled": true
+      }
+    },
+    {
+      "trade_id": "TRD-0001",
+      "symbol": "ONGC",
+      "instrument_id": "273fc9c4-ea18-44ac-8443-bb2dc8a8f0b8",
+      "trade_category": "GAP_DOWN_STOP_LOSS",
+      "entry_date": "2022-03-23",
+      "exit_date": "2022-03-30",
+      "entry_price": 176.50,
+      "exit_price": 163.00,
+      "quantity": 790,
+      "stop_loss": 163.85,
+      "target_price": 198.65,
+      "realized_r": -1.13,
+      "net_pnl": -11248.01,
+      "holding_sessions": 5,
+      "bars": [
+        {"trade_date": "2022-03-23", "open": 176.50, "high": 178.40, "low": 174.10, "close": 175.20, "volume": 12000000},
+        {"trade_date": "2022-03-24", "open": 175.00, "high": 176.80, "low": 172.50, "close": 174.00, "volume": 9500000},
+        {"trade_date": "2022-03-25", "open": 174.50, "high": 175.00, "low": 170.80, "close": 171.50, "volume": 8100000},
+        {"trade_date": "2022-03-28", "open": 171.00, "high": 172.50, "low": 167.00, "close": 168.20, "volume": 11500000},
+        {"trade_date": "2022-03-29", "open": 168.50, "high": 169.00, "low": 164.50, "close": 165.10, "volume": 9200000},
+        {"trade_date": "2022-03-30", "open": 163.00, "high": 164.20, "low": 161.50, "close": 162.80, "volume": 14000000}
+      ],
+      "execution_verification": {
+        "entry_rule": "Session open 176.50 matched planned entry reference",
+        "exit_rule": "Session opened at 163.00, gapping strictly below stop loss of 163.85. BacktestEngine correctly filled at open price 163.00 rather than assuming stop-price fill.",
+        "slippage_against_stop_rupees": 0.85,
+        "arithmetic_reconciled": true
+      }
+    },
+    {
+      "trade_id": "TRD-0017",
+      "symbol": "DRREDDY",
+      "instrument_id": "c7d86247-ab3e-419a-9898-dc7180de8ee0",
+      "trade_category": "STOP_LOSS_INTRADAY",
+      "entry_date": "2022-07-11",
+      "exit_date": "2022-07-26",
+      "entry_price": 875.83,
+      "exit_price": 850.75,
+      "quantity": 231,
+      "stop_loss": 850.75,
+      "target_price": 942.20,
+      "realized_r": -1.15,
+      "net_pnl": -6651.93,
+      "holding_sessions": 12,
+      "bars": [
+        {"trade_date": "2022-07-11", "open": 875.83, "high": 884.00, "low": 870.00, "close": 879.50, "volume": 450000},
+        {"trade_date": "2022-07-26", "open": 855.00, "high": 858.00, "low": 849.20, "close": 851.00, "volume": 620000}
+      ],
+      "execution_verification": {
+        "entry_rule": "Session open matched entry reference",
+        "exit_rule": "Low reached 849.20, touching stop loss 850.75. Filled at 850.75.",
+        "arithmetic_reconciled": true
+      }
+    },
+    {
+      "trade_id": "TRD-0035",
+      "symbol": "ZOMATO",
+      "instrument_id": "dc976c87-b82e-4b36-be1c-e525fc50026e",
+      "trade_category": "MAX_HOLDING_TIME",
+      "entry_date": "2022-09-05",
+      "exit_date": "2022-10-17",
+      "entry_price": 60.45,
+      "exit_price": 62.65,
+      "quantity": 1689,
+      "stop_loss": 54.00,
+      "target_price": 71.25,
+      "realized_r": 0.30,
+      "net_pnl": 3261.16,
+      "holding_sessions": 30,
+      "bars": [
+        {"trade_date": "2022-09-05", "open": 60.45, "high": 61.80, "low": 59.90, "close": 61.20, "volume": 35000000},
+        {"trade_date": "2022-10-17", "open": 62.10, "high": 63.40, "low": 61.80, "close": 62.65, "volume": 28000000}
+      ],
+      "execution_verification": {
+        "entry_rule": "Session open 60.45 matched entry reference",
+        "exit_rule": "Holding sessions reached max limit of 30 sessions. Exited at session close 62.65.",
+        "arithmetic_reconciled": true
+      }
+    }
+  ]
+}

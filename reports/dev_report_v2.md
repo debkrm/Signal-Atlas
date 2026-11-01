@@ -38,7 +38,7 @@ The table below isolates the quantitative impact of each correction, starting fr
 
 | Step | Description | Trades | Win Rate % | Exp (R) | Gross PF | Net PF | Max DD % | Net Return % |
 |---|---|---|---|---|---|---|---|---|
-| **Step 0: v1 base** | Step 0: v1 baseline (reported in dev_report.md at 3ce33ab) | **387** | **52.45%** | **+0.170** | **1.75** | **1.54** | **12.68%** | **+82.37%** |
+| **Step 0: v1 base** | Step 0: v1 baseline (reported in dev_report.md at 3ce33ab) | **387** | **46.51%** | **+0.170** | **1.75** | **1.54** | **12.68%** | **+82.37%** |
 | **Step 1: + Point** | Step 1: + Point-in-time universe (monthly top 100, delistings included) | **84** | **35.71%** | **-0.106** | **1.32** | **1.12** | **13.42%** | **+4.62%** |
 | **Step 2: + True ** | Step 2: + True drawdown (never reset all-time peak equity) | **84** | **35.71%** | **-0.106** | **1.32** | **1.12** | **13.42%** | **+4.62%** |
 | **Step 3: + Deter** | Step 3: + Deterministic ranking (ADTV primary, RSI tie-breaker) | **84** | **35.71%** | **-0.106** | **1.32** | **1.12** | **13.42%** | **+4.62%** |
@@ -67,7 +67,7 @@ The table below isolates the quantitative impact of each correction, starting fr
 |---|---|---|---|---|
 | **1. Real Random-Entry Baseline** | 200 real simulations on PIT universe | Beats 95th percentile | Strategy (-0.106 R) vs p95 (+0.071 R) | **FAIL** |
 | **2. Delay-by-One-Day** | Enter on Day t+2 open instead of t+1 | Degrades gracefully | -0.207 R (84 trades) | **PASS (graceful degradation: -0.101 R)** |
-| **3. Cost Stress** | 2x slippage (25 bps) & doubled exchange fees | Expectancy > 0 | -0.280 R (Net: Rs. -41,171.87) | **NOT APPLICABLE (baseline fails)** |
+| **3. Cost Stress** | 2.5x slippage (25 bps) & 2x exchange fees | Expectancy > 0 | -0.280 R (Net: Rs. -41,171.87) | **NOT APPLICABLE (baseline fails)** |
 | **4. Fill Pessimism** | Entry Variant C (strict limit touch) | Expectancy > 0 | -0.331 R (82 trades) | **NOT APPLICABLE (baseline fails)** |
 | **5. Drop Best 5% Trades** | Drop top 5% highest R trades | Expectancy > 0 | -0.235 R (80 trades) | **NOT APPLICABLE (baseline fails)** |
 | **6. Drop Top 5 Symbols** | Drop top 5 contributing scrips | Expectancy > 0 | -0.311 R (76 trades) | **NOT APPLICABLE (baseline fails)** |
@@ -99,29 +99,33 @@ The table below isolates the quantitative impact of each correction, starting fr
 | Candidate 5 | 2.0 ATR | 2.5 R | +0.201 R | 4/4 | 38 min | N/A (FAIL) | [+0.064, +0.637] | **REJECTED** |
 
 > [!TIP]
-> **Parameter Selection Outcome:** NO ACCEPTABLE CONFIGURATION: Tuning did not find an acceptable parameter set satisfying all pre-registered criteria; all candidates show non-positive out-of-fold expectancy. Baseline retained for development analysis only.
+> **Parameter Selection Outcome:** NO ACCEPTABLE CONFIGURATION: Tuning did not find an acceptable parameter set satisfying all 4 pre-registered criteria. Candidates 0, 1, 2, and 4 exhibit negative out-of-fold expectancy; Candidate 3 (+0.056 R) fails fold consistency (3/4 folds) and falls below the +0.20 R threshold; Candidate 5 (+0.201 R) fails the parameter plateau stability requirement. Baseline retained for development analysis only.
 
 ---
 
 ## 6. Regime & Market Window Deep Dives (Tasks 11 & D)
 
+> [!NOTE]
+> **Fold Reset Semantics:** Each walk-forward fold runs as an independent out-of-sample simulation with fresh capital (Rs. 1,000,000) and an active killswitch counter. Therefore, trade counts across folds (17 + 44 + 91 + 23 = 175 trades) are not additive to the continuous full-period baseline (84 trades), because the continuous portfolio experienced a killswitch lockout in February 2023.
+
 ### 6.1 Fold 4 Deep Dive: H2 2024 Correction
 
 | Diagnostic Metric | Value | Empirical Observation |
 |---|---|---|
-| **Test Window Dates** | `2024-07-01` to `2024-12-31` | 126 completed market trading sessions |
+| **Test Window Dates** | 2024-07-01 to 2024-12-31 | 126 completed market trading sessions |
 | **Benchmark Return** | Q3: +7.54% | Q4: -8.32% | Peak on 2024-09-27 (26,277) to 23,813 (-9.38% correction) |
 | **Market Regime Distribution** | 79 Bullish / 47 Bearish | 37.3% of sessions were Bearish |
-| **Signals Generated / Filled** | 2145 / 64 (2.98%) | Normal fill rate |
-| **Completed Trades** | **64** | 17 wins vs 47 losses |
-| **Win Rate** | **26.56%** | Negative edge during broad-market correction |
-| **Net Expectancy in R** | **-0.787 R** | Drift caused by pullback failure |
-| **Exit Mix Breakdown** | Stop Loss: 41 (64.1%), Target: 14, Time: 5 | Stop-outs heavily dominated (64.1% of trades) |
+| **Completed Trades (Clean 84-Baseline)** | **23** | 6 wins vs 17 losses (Registry Trial 102) |
+| **Win Rate** | **26.09%** | Negative edge during broad-market pullback failure |
+| **Net Expectancy in R** | **-0.324 R** | Realized drift under choppy/corrective conditions |
+| **Max Drawdown** | **11.05%** | Exceeded 10% risk threshold |
+| **Net PnL (Rs.)** | **Rs. -69,393.83** | Net return: -6.94% |
 
 ### 6.2 Fold 1 Investigation: H1 2023 (Adani Selloff & Killswitch)
 
 - **Empirical Session Breakdown:** 121 sessions total: 67 Bullish (55.4%) vs 54 Bearish (44.6%).
-- **Root Cause of Trade Halts:** In January–February 2023, following the Adani-Hindenburg report, the benchmark fell -5.6%. 100% of signals triggered in January-February were stopped out, driving portfolio drawdown above 10% and tripping the drawdown killswitch.
+- **Completed Trades (Clean 84-Baseline):** **17 trades** (1 win vs 16 losses, 5.88% win rate, -1.026 R expectancy, Net PnL: Rs. -108,239.22, Registry Trial 99).
+- **Root Cause of Trade Halts:** In January-February 2023, following the Adani-Hindenburg report, the benchmark fell -5.6%. 100% of signals triggered in January-February were stopped out, driving portfolio drawdown above 10% and tripping the drawdown killswitch.
 - **Lockout Effect:** Because the drawdown killswitch stayed locked during recovery, the strategy took zero entries in Q2 2023, missing the subsequent market rebound.
 
 ---

@@ -43,7 +43,7 @@ def run_attribution() -> Dict[str, Any]:
     step0 = {
         "step": "Step 0: v1 baseline (reported in dev_report.md at 3ce33ab)",
         "total_trades": 387,
-        "win_rate_pct": 52.45,
+        "win_rate_pct": 46.51,
         "expectancy_r": 0.170,
         "profit_factor_gross": 1.75,
         "profit_factor_net": 1.54,

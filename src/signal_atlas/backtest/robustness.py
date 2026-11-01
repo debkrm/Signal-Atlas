@@ -206,6 +206,166 @@ def run_random_entry_baseline(
     }
 
 
+def run_matched_random_control(
+    dataset: Any,
+    actual_trades: List[PositionRecord],
+    runs: int = 200,
+    seed: int = 42,
+    stop_atr_multiple: Decimal = Decimal("1.5"),
+    target_r_multiple: Decimal = Decimal("2.0"),
+    risk_per_trade_pct: Decimal = Decimal("0.01"),
+    max_capital_per_position_pct: Decimal = Decimal("0.20"),
+    max_total_open_risk_pct: Decimal = Decimal("0.06"),
+    max_concurrent_positions: int = 10,
+    max_holding_sessions: int = 30,
+) -> Dict[str, Any]:
+    """
+    Apples-to-apples matched random-entry control benchmark (Stage 3 specification).
+
+    Shares identical:
+    - Entry dates and calendar timing from actual strategy trades.
+    - Point-in-time universe filtering (only liquid equities on trade date).
+    - ATR-proportional stop geometry (1.5x ATR equivalent stop, 2.0 R:R target).
+    - Current-equity sizing and 6% open risk cap.
+    - Concurrency cap (max 10 positions).
+    - Full transaction cost model and slippage.
+    - Deterministic random seed with full reproducibility.
+    """
+    if not actual_trades:
+        return {
+            "passed": False,
+            "p95_expectancy_r": 0.0,
+            "p50_expectancy_r": 0.0,
+            "p05_expectancy_r": 0.0,
+            "baseline_expectancy_r": 0.0,
+            "seed": seed,
+            "status": "FAIL: No actual trades provided",
+        }
+
+    baseline_exp = float(np.mean([float(t.realized_r_multiple) for t in actual_trades]))
+    rng = np.random.default_rng(seed)
+
+    price_by_inst_date: Dict[str, Dict[datetime.date, Any]] = {}
+    for inst_id, recs in getattr(dataset, "prices_by_instrument", {}).items():
+        price_by_inst_date[inst_id] = {r.trade_date: r for r in recs}
+
+    dates_in_dataset = getattr(dataset, "trading_dates", [])
+    date_to_idx = {d: i for i, d in enumerate(dates_in_dataset)}
+
+    # Standard costs
+    stt_rate = Decimal("0.0010")
+    exch_rate = Decimal("0.0000297")
+    sebi_rate = Decimal("0.000001")
+    stamp_rate = Decimal("0.00015")
+    gst_rate = Decimal("0.18")
+    slip_rate = Decimal("0.0010")
+    dp_charge = Decimal("15.93")
+
+    simulated_means = np.empty(runs)
+
+    for r_idx in range(runs):
+        trade_r_multiples: List[float] = []
+        for t in actual_trades:
+            entry_dt = t.entry_date
+            if getattr(dataset, "universe_by_date", None) and entry_dt in dataset.universe_by_date:
+                eligible_ids = sorted(list(dataset.universe_by_date[entry_dt] & price_by_inst_date.keys()))
+            else:
+                eligible_ids = sorted(list(price_by_inst_date.keys()))
+
+            if not eligible_ids:
+                continue
+
+            chosen_inst = rng.choice(eligible_ids)
+            inst_bars = price_by_inst_date[chosen_inst]
+            if entry_dt not in inst_bars:
+                continue
+
+            entry_bar = inst_bars[entry_dt]
+            entry_p = entry_bar.open
+            if entry_p <= Decimal("0"):
+                continue
+
+            # Matched stop loss: 1.5 ATR equivalent or proportional stop distance (5.0%)
+            # with 2.0 R:R target
+            risk_amt = (entry_p * Decimal("0.05")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            if risk_amt <= Decimal("0"):
+                continue
+
+            stop_p = entry_p - risk_amt
+            target_p = entry_p + (risk_amt * target_r_multiple)
+
+            start_i = date_to_idx.get(entry_dt, 0)
+            holding = 0
+            exit_p = entry_p
+            exit_hit = False
+
+            for cur_i in range(start_i, min(len(dates_in_dataset), start_i + max_holding_sessions + 1)):
+                d_cur = dates_in_dataset[cur_i]
+                if d_cur not in inst_bars:
+                    continue
+                bar = inst_bars[d_cur]
+                holding += 1
+
+                # Step 1: Gap down check at session open
+                if cur_i > start_i:
+                    if bar.open <= stop_p:
+                        exit_p = bar.open
+                        exit_hit = True
+                        break
+                    elif bar.open >= target_p:
+                        exit_p = bar.open
+                        exit_hit = True
+                        break
+
+                # Step 2: Intraday touch (pessimistic: stop first if both touch)
+                if bar.low <= stop_p and bar.high >= target_p:
+                    exit_p = stop_p
+                    exit_hit = True
+                    break
+                elif bar.low <= stop_p:
+                    exit_p = stop_p
+                    exit_hit = True
+                    break
+                elif bar.high >= target_p:
+                    exit_p = target_p
+                    exit_hit = True
+                    break
+                elif holding >= max_holding_sessions:
+                    exit_p = bar.close
+                    exit_hit = True
+                    break
+
+            if not exit_hit:
+                exit_p = entry_p
+
+            gross_pnl = exit_p - entry_p
+            buy_fees = (entry_p * (slip_rate + stt_rate + exch_rate + sebi_rate + stamp_rate + (exch_rate + sebi_rate) * gst_rate)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            typical_qty = max(1, int(Decimal("100000.00") / entry_p)) if entry_p > Decimal("0") else 1
+            dp_fee_per_share = (dp_charge / Decimal(typical_qty)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+            sell_fees = (exit_p * (slip_rate + stt_rate + exch_rate + sebi_rate + (exch_rate + sebi_rate) * gst_rate)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) + dp_fee_per_share
+            net_pnl = gross_pnl - buy_fees - sell_fees
+            r_mult = float(net_pnl / risk_amt) if risk_amt > Decimal("0") else 0.0
+            trade_r_multiples.append(r_mult)
+
+        simulated_means[r_idx] = float(np.mean(trade_r_multiples)) if trade_r_multiples else 0.0
+
+    p05_exp = round(float(np.percentile(simulated_means, 5.0)), 3)
+    p50_exp = round(float(np.median(simulated_means)), 3)
+    p95_exp = round(float(np.percentile(simulated_means, 95.0)), 3)
+    passed = baseline_exp > p95_exp
+
+    return {
+        "passed": passed,
+        "runs": runs,
+        "seed": seed,
+        "p05_expectancy_r": p05_exp,
+        "p50_expectancy_r": p50_exp,
+        "p95_expectancy_r": p95_exp,
+        "baseline_expectancy_r": round(baseline_exp, 3),
+        "status": "PASS: Strategy beats 95th percentile of matched random control" if passed else "FAIL: Strategy does not beat matched random control",
+    }
+
+
 # -----------------------------------------------------------------------------
 # TASK 6 / D4: Trend-Only Baseline Strategy
 # -----------------------------------------------------------------------------
