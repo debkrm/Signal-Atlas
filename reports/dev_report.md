@@ -2,14 +2,14 @@
 
 > [!WARNING]
 > **SUPERSEDED, known defects, see v2.**
-> This report is superseded due to critical defects D1–D17 identified in gent-correction.md (including universe look-ahead bias, reset peak drawdown, synthetic random baseline, unverified criteria, and sweep/selection inconsistencies). Do not use this report for any decision making. See 
+> This report is superseded due to critical defects D1–D17 identified in gent-correction.md (including universe look-ahead bias, reset peak drawdown, synthetic random baseline, unverified criteria, and sweep/selection inconsistencies). Do not use this report for any decision making. See
 eports/dev_report_v2.md for the corrected quantitative evaluation.
 
-**Strategy Under Test:** `trend_pullback` v1.0 (Long-Only Delivery Swing, NSE Cash Equities)  
-**Dataset Window (Development Set):** `2022-01-03` to `2024-12-31` (743 completed trading sessions)  
-**Holdout Dataset Status:** `2025-01-01` to `2026-10-30` (**STRICTLY LOCKED** per Rule 1; 0 lookahead, 0 access)  
-**Generated At:** 2026-11-01 07:30:11 UTC  
-**Total Configurations Evaluated:** 22 trials logged in `experiments/registry.csv`  
+**Strategy Under Test:** `trend_pullback` v1.0 (Long-Only Delivery Swing, NSE Cash Equities)
+**Dataset Window (Development Set):** `2022-01-03` to `2024-12-31` (743 completed trading sessions)
+**Holdout Dataset Status:** `2025-01-01` to `2026-10-30` (**STRICTLY LOCKED** per Rule 1; 0 lookahead, 0 access)
+**Generated At:** 2026-11-01 07:30:11 UTC
+**Total Configurations Evaluated:** 22 trials logged in `experiments/registry.csv`
 
 ---
 

@@ -131,4 +131,3 @@ def test_six_trade_hand_verified_metrics():
 
     # Post-tax net P&L (20% STCG) = 935 - 187 = 748.00
     assert metrics["post_tax_net_pnl"] == 748.00
-

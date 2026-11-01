@@ -146,7 +146,7 @@ def test_delisting_detection(pg_db):
 def test_etf_and_rights_exclusions():
     """Verifies that non-equity instruments (ETFs, REs) are excluded by policy."""
     cfg = UniverseConfig()
-    
+
     # ETF (INF prefix)
     is_elig, reason, _ = evaluate_instrument_eligibility(
         instrument_id="etf-1", symbol="NIFTYBEES", isin="INF732E01015", series="EQ",

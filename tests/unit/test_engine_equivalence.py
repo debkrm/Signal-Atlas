@@ -122,4 +122,3 @@ def test_500_random_pairs_equivalence():
                 assert sizing_direct.planned_risk == trade_setup.planned_risk_amount
                 assert sizing_direct.planned_capital == trade_setup.planned_capital_usage
                 assert sizing_direct.limiting_factor == trade_setup.limiting_factor
-

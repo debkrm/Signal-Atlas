@@ -30,4 +30,3 @@ risk_all = [float(t.initial_risk_per_share * Decimal(t.quantity)) for t in trade
 
 print(f"Current: mean R = {np.mean(r_all):.4f} R | Net PnL = Rs. {sum(pnl_all):,.2f}")
 print(f"Current: mean Risk = Rs. {np.mean(risk_all):,.2f} | Sum(PnL)/Sum(R) = Rs. {sum(pnl_all)/sum(r_all):.2f}")
-

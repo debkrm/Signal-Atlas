@@ -82,4 +82,3 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 4. **One engine.** No second implementation of strategy filters, fills, or sizing.
 5. **Do not create `HOLDOUT_UNLOCK`.** Only the human does.
 6. **A criterion is PASS only if a printed computation or unit test backs it.** If something was not run, the report says "NOT RUN".
-

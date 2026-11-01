@@ -3,10 +3,10 @@
 > [!IMPORTANT]
 > **Methodological Correction Notice:** This report supersedes `reports/dev_report.md`. All results presented here are computed under strict point-in-time universe construction with monthly rebalancing, active delisting tracking, true all-time peak drawdown accounting, single authoritative engine execution, deterministic candidate ranking, and pre-registered decision criteria.
 
-**Strategy Under Test:** `trend_pullback` v1.0 (Long-Only Delivery Swing, NSE Cash Equities)  
-**Dataset Window (Development Set):** `2022-01-03` to `2024-12-31` (743 completed trading sessions)  
-**Holdout Dataset Status:** `2025-01-01` to `2026-10-30` (**STRICTLY LOCKED** per Rule 1; 0 lookahead, 0 access)  
-**Generated At:** 2026-11-01 12:58:16 UTC  
+**Strategy Under Test:** `trend_pullback` v1.0 (Long-Only Delivery Swing, NSE Cash Equities)
+**Dataset Window (Development Set):** `2022-01-03` to `2024-12-31` (743 completed trading sessions)
+**Holdout Dataset Status:** `2025-01-01` to `2026-10-30` (**STRICTLY LOCKED** per Rule 1; 0 lookahead, 0 access)
+**Generated At:** 2026-11-01 12:58:16 UTC
 
 ---
 

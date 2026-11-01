@@ -23,7 +23,7 @@ def get_point_in_time_delisted_instruments(
     """
     Returns instruments that ceased trading at least inactive_sessions_threshold
     prior to as_of_date, based strictly on records on or before as_of_date.
-    
+
     Returns:
         Dict mapping instrument_id -> last_observed_trade_date
     """
@@ -68,7 +68,7 @@ def detect_and_record_delistings(
     - Sets Instrument.delisting_date = last_trade_date
     - Sets Instrument.status = 'DELISTED'
     - Closes open InstrumentSymbolHistory.valid_to = last_trade_date
-    
+
     Strictly uses data available on or before as_of_date (or latest ingested date if None).
     """
     db = session
@@ -88,7 +88,7 @@ def detect_and_record_delistings(
     updated_count = 0
     delisted_ids = list(delisted_map.keys())
     now_ts = datetime.datetime.now(datetime.timezone.utc)
-    
+
     # Update in chunks of 500
     chunk_size = 500
     for i in range(0, len(delisted_ids), chunk_size):

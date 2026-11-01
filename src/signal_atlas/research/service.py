@@ -278,6 +278,7 @@ class ResearchService:
                     )
                     .distinct()
                 )
+                active_inst_ids = db.execute(subq).scalars().all()
             elif scan_all:
                 # Scan all active EQ series instruments on target_date without limiting to top 100 turnover
                 subq = (
@@ -288,6 +289,7 @@ class ResearchService:
                     )
                     .order_by(DailyPriceRaw.traded_value.desc())
                 )
+                active_inst_ids = db.execute(subq).scalars().all()
             else:
                 # Point-in-Time universe as of target_date (Task 15)
                 pit_cache_path = Path("data/pit_universe_monthly_2022_2024.json")

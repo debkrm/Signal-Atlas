@@ -210,25 +210,13 @@ class RawDataManifest(BaseModel):
         return json.dumps(self.canonical_dict(), sort_keys=True, separators=(",", ":"))
 
 
-_cached_manifest: Optional[RawDataManifest] = None
-MANIFEST_CACHE_FILE = Path("data/.raw_manifest_cache.json")
-
-
-def compute_raw_data_manifest(session: Session, force_refresh: bool = False) -> RawDataManifest:
+def compute_raw_data_manifest(session: Session) -> RawDataManifest:
     """Compute an exact streaming manifest of all direct universe inputs.
-    Uses memory and disk caching when available for high-throughput evaluation.
+
+    ``corporate_actions`` is included because unresolved action statuses determine
+    the quarantine set. ``daily_prices_adjusted`` is excluded because universe
+    construction reads raw prices only.
     """
-    global _cached_manifest
-    if not force_refresh:
-        if _cached_manifest is not None:
-            return _cached_manifest
-        if MANIFEST_CACHE_FILE.exists():
-            try:
-                data = json.loads(MANIFEST_CACHE_FILE.read_text(encoding="utf-8"))
-                _cached_manifest = RawDataManifest.model_validate(data)
-                return _cached_manifest
-            except Exception:
-                pass
     table_specs = (
         (DailyPriceRaw.__table__, (DailyPriceRaw.__table__.c.id,)),
         (Instrument.__table__, (Instrument.__table__.c.instrument_id,)),
@@ -259,7 +247,7 @@ def compute_raw_data_manifest(session: Session, force_refresh: bool = False) -> 
         .order_by(TradingCalendar.trade_date)
     ).scalars().all()
 
-    manifest = RawDataManifest(
+    return RawDataManifest(
         table_row_counts=row_counts,
         table_hashes=table_hashes,
         prices_row_count=row_counts[DailyPriceRaw.__tablename__],
@@ -275,10 +263,3 @@ def compute_raw_data_manifest(session: Session, force_refresh: bool = False) -> 
         corporate_actions_count=row_counts[CorporateAction.__tablename__],
         manifest_fingerprint=manifest_digest.hexdigest(),
     )
-    _cached_manifest = manifest
-    try:
-        MANIFEST_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        MANIFEST_CACHE_FILE.write_text(manifest.model_dump_json(), encoding="utf-8")
-    except Exception:
-        pass
-    return manifest

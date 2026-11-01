@@ -116,7 +116,6 @@ class PointInTimeUniverseService:
         config: Optional[UniverseConfig] = None,
         persist: bool = True,
         session: Optional[Session] = None,
-        raw_manifest: Optional[RawDataManifest] = None,
     ) -> UniverseSnapshot:
         """
         Computes the complete, deterministic Point-in-Time Universe for as_of_date.
@@ -127,8 +126,7 @@ class PointInTimeUniverseService:
 
         with db_cm as db:
             with self._consistent_snapshot_transaction(db):
-                if raw_manifest is None:
-                    raw_manifest = compute_raw_data_manifest(db)
+                raw_manifest = compute_raw_data_manifest(db)
                 return self._build_universe(
                     as_of_date,
                     config=cfg,
@@ -600,7 +598,6 @@ class PointInTimeUniverseService:
         as_of_date: datetime.date,
         config: Optional[UniverseConfig] = None,
         session: Optional[Session] = None,
-        raw_manifest: Optional[RawDataManifest] = None,
     ) -> UniverseSnapshot:
         """
         Loads an existing universe snapshot from PostgreSQL if present,
@@ -611,8 +608,7 @@ class PointInTimeUniverseService:
         db_cm = get_db(active_session)
 
         with db_cm as db, self._consistent_snapshot_transaction(db):
-            if raw_manifest is None:
-                raw_manifest = compute_raw_data_manifest(db)
+            raw_manifest = compute_raw_data_manifest(db)
             cfg = self._bind_manifest(cfg, raw_manifest)
             snap_rec = db.execute(
                 select(UniverseSnapshotRecord).where(

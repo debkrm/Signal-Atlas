@@ -112,4 +112,3 @@ def investigate_fold4() -> Dict[str, Any]:
 
 if __name__ == "__main__":
     investigate_fold4()
-

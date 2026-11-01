@@ -574,7 +574,7 @@ class BacktestEngine:
             eligible_universe = universe_by_date.get(curr_date) if universe_by_date is not None else None
 
             day_candidates: List[Tuple[StrategyCandidate, Decimal]] = []
-            
+
             # Determine candidate evaluation set
             candidate_inst_ids = sorted_inst_recs.keys() if eligible_universe is None else (eligible_universe & sorted_inst_recs.keys())
 

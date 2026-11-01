@@ -72,10 +72,10 @@ def run_diagnostics():
         stop_p = t.initial_stop_loss
         target_p = t.initial_target_price
         risk_per_sh = t.initial_risk_per_share
-        
+
         # Stop distance %
         stop_dist_pct = float((entry_p - stop_p) / entry_p * 100) if entry_p > 0 else 0.0
-        
+
         # Rupee risk planned
         rupee_risk = float(risk_per_sh * Decimal(qty))
         rupee_risk_pct_equity = (rupee_risk / float(initial_cap)) * 100.0
@@ -235,4 +235,3 @@ def run_diagnostics():
 
 if __name__ == "__main__":
     run_diagnostics()
-

@@ -62,10 +62,10 @@ def diagnose_universe():
                 WHERE ish.instrument_id IN :ids AND dpr.trade_date = :dt
             """)
             verified_rows = db.execute(query, {"ids": inst_ids, "dt": datetime.date.fromisoformat(td)}).fetchall()
-            
+
             series_set = set(r[2] for r in verified_rows)
             print(f"Series present in universe: {series_set} (All 'EQ' delivery cash equity)")
-            
+
             # Check for ETFs or Rights in symbols
             etf_symbols = [r[1] for r in verified_rows if any(suffix in r[1] for suffix in ["BEES", "ETF", "GOLD", "NIFTY", "-RE"])]
             print(f"ETFs / Derivatives / Rights excluded: {len(etf_symbols)} found (Verified: {etf_symbols})")

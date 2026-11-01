@@ -93,4 +93,3 @@ def test_killswitch_cooldown_decrement():
     engine = BacktestEngine(config=cfg)
     assert engine.config.killswitch_cooldown_sessions == 5
     assert engine.config.killswitch_variant == KillswitchVariant.COOLDOWN_KEEP_TRUE_PEAK
-

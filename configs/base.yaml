@@ -47,4 +47,3 @@ costs:
   gst_pct: 0.18                   # 18% on exchange fee, brokerage, and SEBI fee
   base_slippage_bps: 10           # 10 bps slippage per side (base case)
   stress_slippage_bps: 25         # 25 bps slippage per side (stress case)
-

@@ -26,4 +26,3 @@ print(f"Net Profit Factor: {metrics['profit_factor']:.2f}")
 print(f"Gross Profit Factor: {metrics['gross_profit_factor']:.2f}")
 print(f"Max DD: {metrics['max_drawdown_pct']:.2f}%")
 print(f"Net return: {metrics['net_return_pct']:.2f}%")
-
