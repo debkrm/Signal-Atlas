@@ -1,5 +1,10 @@
 # Signal Atlas: Quantitative Development & Tuning Report
 
+> [!WARNING]
+> **SUPERSEDED, known defects, see v2.**
+> This report is superseded due to critical defects D1–D17 identified in gent-correction.md (including universe look-ahead bias, reset peak drawdown, synthetic random baseline, unverified criteria, and sweep/selection inconsistencies). Do not use this report for any decision making. See 
+eports/dev_report_v2.md for the corrected quantitative evaluation.
+
 **Strategy Under Test:** `trend_pullback` v1.0 (Long-Only Delivery Swing, NSE Cash Equities)  
 **Dataset Window (Development Set):** `2022-01-03` to `2024-12-31` (743 completed trading sessions)  
 **Holdout Dataset Status:** `2025-01-01` to `2026-10-30` (**STRICTLY LOCKED** per Rule 1; 0 lookahead, 0 access)  
@@ -10,13 +15,13 @@
 
 ## Executive Summary & Verdict
 
-### **Development Verdict: GO (DEVELOPMENT PHASE PASSED)**
+### **Development Verdict: SUPERSEDED (INVALIDATED)**
 
 - **Statistical Edge:** Realized baseline net expectancy is **+0.170 R** with Profit Factor **1.75** over **387 completed trades**.
-- **Bootstrap 95% Confidence Interval:** **[0.019 R, 0.321 R]**. Zero is excluded from the 95% CI, verifying that the positive edge is statistically significant and not an artifact of random chance.
+- **Bootstrap 95% Confidence Interval:** **[0.019 R, 0.321 R]**. Zero is excluded from the 95% CI, evaluating the realized edge across the sample.
 - **Capital Growth:** The strategy produced **+Rs. 823,731.52 net profit** (+82.37% return, 22.41% CAGR) against a **12.68% maximum drawdown**.
 - **Benchmark Outperformance:** The strategy achieved a Return-to-Max-Drawdown ratio of **6.50x**, outperforming buy-and-hold NIFTYBEES (**2.46x**; +38.67% return / 15.73% max drawdown).
-- **Tuning Outcome:** Baseline v1.0 sits on a broad, stable parameter plateau. Sweeping Tier 1 parameters confirmed that neighboring points retain over 80% of expectancy, with no narrow knife-edge over-fitting. Baseline v1.0 was frozen to `configs/frozen_v1.yaml`.
+- **Tuning Outcome:** Baseline v1.0 parameter sweeps evaluated across Tier 1 parameters.
 
 ---
 
@@ -140,7 +145,7 @@ Every stress test specified in Section 6 of the plan was executed against the ba
 | **5. Beats Random** | Above 95th percentile of random runs | **+0.170 R > +0.070 R** | **PASS** |
 | **6. Beats Benchmark** | Return-to-Max-DD >= NIFTYBEES buy & hold | Strategy: **6.50x** vs NIFTYBEES: **2.46x** | **PASS** |
 | **7. Cost Stress** | Expectancy > 0 at 2x costs & slippage | **+0.062 R** | **PASS** |
-| **8. Robustness** | Plateau test and Variant C pass | Plateau verified, Variant C: **+0.137 R** | **PASS** |
+| **8. Robustness** | Plateau test and Variant C pass | Plateau retention not verified, Variant C: **+0.137 R** | **PASS** |
 | **9. Trade Distribution**| Not driven by outlier trades or symbols | Without top 5% trades: **+0.048 R**, top 5 scrips: **+0.122 R** | **PASS** |
 
 ---
@@ -156,5 +161,5 @@ Every stress test specified in Section 6 of the plan was executed against the ba
 
 ## 6. Recommended Next Steps
 
-1. **Final Holdout Evaluation (Locked):** The development phase has satisfied all pre-registered criteria. The holdout dataset (`2025-01-01` to `2026-10-30`) remains **STRICTLY LOCKED**. When Deb decides to evaluate the holdout, Deb must manually create the file `HOLDOUT_UNLOCK` in the repo root.
+1. **Final Holdout Evaluation (Locked):** The initial development report is superseded. The holdout dataset (`2025-01-01` to `2026-10-30`) remains **STRICTLY LOCKED**. When Deb decides to evaluate the holdout, Deb must manually create the file `HOLDOUT_UNLOCK` in the repo root.
 2. **Forward Paper Trading:** Follow Phase 8 using the built-in trade journal tools (`journal_add`, `journal_close`, `journal_summary`) for 4 to 8 weeks to verify execution latency, fill rates, and real slippage before risking live capital.

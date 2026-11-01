@@ -1,0 +1,43 @@
+# Signal Atlas: Pre-Registered Go / No-Go Decision Criteria
+# Exact thresholds from Section 8 of backtest_and_tuning_plan.md
+# Committed before holdout evaluation; never edit thresholds after a run.
+
+criteria:
+  sample_size:
+    min_holdout_trades: 60
+    min_total_trades: 150
+    description: "At least 60 holdout trades and 150 trades overall; below this is INSUFFICIENT EVIDENCE."
+
+  expectancy:
+    min_expectancy_r: 0.20
+    description: "At least +0.20R net expectancy per trade."
+
+  profit_factor:
+    min_profit_factor: 1.30
+    description: "Profit factor at least 1.30 net of all transaction costs and slippage."
+
+  consistency_with_development:
+    min_consistency_ratio: 0.50
+    description: "Holdout expectancy at least 50% of development walk-forward average."
+
+  drawdown:
+    max_historical_drawdown_pct: 10.0
+    max_monte_carlo_p95_drawdown_pct: 15.0
+    description: "Historical max drawdown within 10% killswitch; Monte Carlo p95 drawdown <= 15%."
+
+  beats_random:
+    min_random_entry_percentile: 95.0
+    description: "Net expectancy above the 95th percentile of random-entry simulation distribution."
+
+  beats_benchmark:
+    min_calmar_ratio_multiple: 1.00
+    description: "Return-to-max-drawdown ratio at least that of buy-and-hold NIFTYBEES over same period."
+
+  cost_stress:
+    min_stress_expectancy_r: 0.00
+    description: "Expectancy still strictly above zero at 2x costs and slippage."
+
+  robustness:
+    min_plateau_retention_pct: 0.70
+    require_variant_c_positive: true
+    description: "Plateau neighbor retention >= 70% and entry-variant C (limit order) positive."
