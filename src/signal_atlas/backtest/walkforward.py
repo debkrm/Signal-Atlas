@@ -239,6 +239,10 @@ def evaluate_tuning_candidate(
     3. Parameter plateau check: adjacent grid points have expectancy within 30% of candidate.
     4. Out-of-fold bootstrap CI of delta (candidate - baseline) excludes zero at 90% confidence.
     """
+    # 0. Edge sanity: candidate must have strictly positive out-of-fold expectancy
+    candidate_exp = all_grid_fold_expectancies[candidate_idx]
+    cond0_positive_edge = candidate_exp > 0.0
+
     # 1. Fold-by-fold expectancy check
     folds_beating_baseline = 0
     fold_trade_counts = []
@@ -252,19 +256,23 @@ def evaluate_tuning_candidate(
     cond1_folds_pass = folds_beating_baseline >= 3
     cond2_trade_counts_pass = all(tc >= 30 for tc in fold_trade_counts)
 
-    # 3. Plateau check against adjacent neighbors
-    candidate_exp = all_grid_fold_expectancies[candidate_idx]
+    # 3. Plateau check against adjacent neighbors (retention % calculation)
     neighbor_idxs = get_grid_neighbors(candidate_idx)
-    plateau_pass = True
     plateau_details = []
     for n_idx in neighbor_idxs:
         n_exp = all_grid_fold_expectancies[n_idx]
         plateau_details.append({"neighbor_idx": n_idx, "expectancy": n_exp})
-        if candidate_exp > 0:
-            if n_exp < (candidate_exp * 0.70):
-                plateau_pass = False
 
-    # 4. Bootstrap CI of delta (candidate minus baseline) at 90% confidence
+    if candidate_exp > 0:
+        neighbor_exps = [all_grid_fold_expectancies[n] for n in neighbor_idxs]
+        min_n_exp = min(neighbor_exps) if neighbor_exps else candidate_exp
+        retention_pct = round((min_n_exp / candidate_exp) * 100.0, 1)
+        plateau_pass = retention_pct >= 70.0
+    else:
+        retention_pct = 0.0
+        plateau_pass = False
+
+    # 4. Bootstrap CI of delta (candidate minus baseline) at 95% confidence (Task E / D10)
     c_r = np.array([float(t.realized_r_multiple) for t in candidate_trades]) if candidate_trades else np.array([0.0])
     b_r = np.array([float(t.realized_r_multiple) for t in baseline_trades]) if baseline_trades else np.array([0.0])
 
@@ -276,12 +284,13 @@ def evaluate_tuning_candidate(
         b_sample = rng.choice(b_r, size=len(b_r), replace=True)
         boot_diffs[b] = np.mean(c_sample) - np.mean(b_sample)
 
-    ci_lower = round(float(np.percentile(boot_diffs, 5.0)), 4)
-    ci_upper = round(float(np.percentile(boot_diffs, 95.0)), 4)
+    ci_lower = round(float(np.percentile(boot_diffs, 2.5)), 4)
+    ci_upper = round(float(np.percentile(boot_diffs, 97.5)), 4)
     cond4_ci_excludes_zero = ci_lower > 0.0
 
     all_conditions_met = (
-        cond1_folds_pass
+        cond0_positive_edge
+        and cond1_folds_pass
         and cond2_trade_counts_pass
         and plateau_pass
         and cond4_ci_excludes_zero
@@ -290,15 +299,17 @@ def evaluate_tuning_candidate(
     return {
         "candidate_idx": candidate_idx,
         "grid_params": PARAM_GRID[candidate_idx],
+        "cond0_positive_edge": cond0_positive_edge,
         "folds_beating_baseline": folds_beating_baseline,
         "cond1_folds_pass": cond1_folds_pass,
         "fold_trade_counts": fold_trade_counts,
         "cond2_trade_counts_pass": cond2_trade_counts_pass,
         "candidate_expectancy": candidate_exp,
         "neighbor_expectancies": plateau_details,
+        "retention_pct": retention_pct,
         "cond3_plateau_pass": plateau_pass,
-        "ci_lower_90": ci_lower,
-        "ci_upper_90": ci_upper,
+        "ci_lower_95": ci_lower,
+        "ci_upper_95": ci_upper,
         "cond4_ci_excludes_zero": cond4_ci_excludes_zero,
         "all_conditions_met": all_conditions_met,
     }

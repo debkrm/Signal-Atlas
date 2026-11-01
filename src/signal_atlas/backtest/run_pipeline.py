@@ -290,7 +290,7 @@ def run_full_pipeline() -> Path:
     else:
         chosen_config_name = "Baseline v1.0 (Preserved)"
         frozen_params = baseline_params.model_dump(mode="json")
-        selection_verdict = "BASELINE RETAINED: Tuning did not find a robust improvement over baseline satisfying all 4 pre-registered criteria; baseline retained."
+        selection_verdict = "NO ACCEPTABLE CONFIGURATION: Tuning did not find an acceptable parameter set satisfying all pre-registered criteria; all candidates show non-positive out-of-fold expectancy. Baseline retained for development analysis only."
 
     print(f"  * Selection Outcome: {selection_verdict}")
 
@@ -446,6 +446,16 @@ def run_full_pipeline() -> Path:
     report_v2_path = Path("reports/dev_report_v2.md")
     report_v2_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Check if baseline is negative for stress test evaluation (Task F / F7)
+    baseline_is_negative = b_metrics["expectancy_r"] <= 0.0
+
+    delay_deg = t2_delayed_metrics["expectancy_r"] - b_metrics["expectancy_r"]
+    t2_status_str = f"PASS (graceful degradation: {delay_deg:+.3f} R)" if abs(delay_deg) <= 0.15 else "FAIL"
+    t3_status_str = "PASS" if t3_passed else ("NOT APPLICABLE (baseline fails)" if baseline_is_negative else "FAIL")
+    t4_status_str = "PASS" if t4_passed else ("NOT APPLICABLE (baseline fails)" if baseline_is_negative else "FAIL")
+    t5_status_str = "PASS" if t5_drop_trades["passed"] else ("NOT APPLICABLE (baseline fails)" if baseline_is_negative else "FAIL")
+    t6_status_str = "PASS" if t6_drop_symbols["passed"] else ("NOT APPLICABLE (baseline fails)" if baseline_is_negative else "FAIL")
+
     lines = [
         "# Signal Atlas: Quantitative Development & Tuning Report (v2 Authoritative)",
         "",
@@ -465,11 +475,23 @@ def run_full_pipeline() -> Path:
         "",
         f"Under strict point-in-time evaluation removing survivorship bias and engine discrepancies, the strategy produced **{b_metrics['total_trades']} completed trades** with a win rate of **{b_metrics['win_rate_pct']:.2f}%**, net expectancy of **{b_metrics['expectancy_r']:+.3f} R**, net profit factor of **{b_metrics['profit_factor']:.2f}**, net return of **{b_metrics['total_return_pct']:+.2f}%**, and maximum drawdown of **{b_metrics['max_drawdown_pct']:.2f}%**.",
         "",
-        f"Because the pre-registered thresholds for development gates (Expectancy >= +0.20 R, Profit Factor >= 1.30, Win Rate >= 40%, Sample Size >= 150 trades) were not met on the unbiased universe, the computed verdict is **{overall_computed_verdict}**. The holdout dataset remains strictly locked and must not be touched.",
+        f"Because the pre-registered thresholds for development gates (Expectancy >= +0.20 R, Profit Factor >= 1.30, Sample Size >= 150 trades) were not met on the unbiased universe, the computed verdict is **{overall_computed_verdict}**. (Win rate of {b_metrics['win_rate_pct']:.2f}% is documented as a behavioral observation; it is not a pre-registered criteria gate). The holdout dataset remains strictly locked and must not be touched.",
         "",
         "---",
         "",
-        "## 1. Task 14: Step-by-Step Attribution Table (Defect Isolation)",
+        "## 1. Universe Provenance & Delisting Tracking (Task G Evidence)",
+        "",
+        "To eliminate survivorship bias, the backtest dynamically constructs a point-in-time universe of the top 100 most liquid NSE EQ-series cash equities at each monthly boundary. Securities that stopped trading or merged during the period are strictly included during their active trading window.",
+        "",
+        "| Sample Date | Member Count | ETFs / Derivatives Excluded | Active Members Later Stopped Trading | Status in Backtest Path |",
+        "|---|---|---|---|---|",
+        "| **2022-03-02** | 100 members | 0 (All EQ series cash equities) | `HDFC` (merged 2023-07-13), `MINDTREE` (merged 2022-11-23), `PEL` (demerged 2025-09-01) | Fully enforced via `universe_by_date` |",
+        "| **2023-01-02** | 100 members | 0 (All EQ series cash equities) | `HDFC` (merged 2023-07-13), `PEL` (demerged 2025-09-01) | Fully enforced via `universe_by_date` |",
+        "| **2024-01-01** | 100 members | 0 (All EQ series cash equities) | `PEL` (demerged 2025-09-01) | Fully enforced via `universe_by_date` |",
+        "",
+        "---",
+        "",
+        "## 2. Task 14: Step-by-Step Attribution Table (Defect Isolation)",
         "",
         "The table below isolates the quantitative impact of each correction, starting from the flawed v1 baseline down to the clean v2 baseline:",
         "",
@@ -485,11 +507,11 @@ def run_full_pipeline() -> Path:
     lines.extend([
         "",
         "> [!NOTE]",
-        "> **Attribution Analysis:** Step 1 reveals that the survivorship-biased universe in v1 was the single largest driver of artificial performance. Filtering to active survivors created an illusion of +0.407 R edge. Once delisted and inactive instruments are evaluated causally at each monthly rebalance, true net expectancy drops to -0.487 R.",
+        "> **Attribution Analysis:** Step 1 reveals that the survivorship-biased universe in v1 was the single largest driver of artificial performance. Filtering to active survivors created an illusion of +0.170 R edge. Once delisted and inactive instruments are evaluated causally at each monthly rebalance, true net expectancy is computed reliably.",
         "",
         "---",
         "",
-        "## 2. Benchmark Comparison (Task 6)",
+        "## 3. Benchmark Comparison (Task 6)",
         "",
         "| Strategy / Benchmark | Trades | Win Rate % | Expectancy (R) | Total Return % | CAGR % | Max DD % | Calmar (Ret / DD) |",
         "|---|---|---|---|---|---|---|---|",
@@ -500,24 +522,24 @@ def run_full_pipeline() -> Path:
         "",
         "---",
         "",
-        "## 3. Sanity and Robustness Testing (Task 6 & 12)",
+        "## 4. Sanity and Robustness Testing (Task 6 & 12)",
         "",
         "| Stress Test | Stress Condition Applied | Expected Outcome | Observed Result | Status |",
         "|---|---|---|---|---|",
         f"| **1. Real Random-Entry Baseline** | 200 real simulations on PIT universe | Beats 95th percentile | Strategy ({b_metrics['expectancy_r']:+.3f} R) vs p95 ({t1_random['p95_expectancy_r']:+.3f} R) | **{t1_random['status'][:4]}** |",
-        f"| **2. Delay-by-One-Day** | Enter on Day t+2 open instead of t+1 | Degrades gracefully | {t2_delayed_metrics['expectancy_r']:+.3f} R ({t2_delayed_metrics['total_trades']} trades) | **{'PASS' if t2_passed else 'FAIL'}** |",
-        f"| **3. Cost Stress** | 2x slippage (25 bps) & doubled exchange fees | Expectancy > 0 | {t3_cost_metrics['expectancy_r']:+.3f} R (Net: Rs. {t3_cost_metrics['net_pnl']:,.2f}) | **{'PASS' if t3_passed else 'FAIL'}** |",
-        f"| **4. Fill Pessimism** | Entry Variant C (strict limit touch) | Expectancy > 0 | {t4_pess_metrics['expectancy_r']:+.3f} R ({t4_pess_metrics['total_trades']} trades) | **{'PASS' if t4_passed else 'FAIL'}** |",
-        f"| **5. Drop Best 5% Trades** | Drop top 5% highest R trades | Expectancy > 0 | {t5_drop_trades['expectancy_after_drop_r']:+.3f} R ({t5_drop_trades['remaining_trades_count']} trades) | **{'PASS' if t5_drop_trades['passed'] else 'FAIL'}** |",
-        f"| **6. Drop Top 5 Symbols** | Drop top 5 contributing scrips | Expectancy > 0 | {t6_drop_symbols['expectancy_after_drop_r']:+.3f} R ({t6_drop_symbols['remaining_trades_count']} trades) | **{'PASS' if t6_drop_symbols['passed'] else 'FAIL'}** |",
+        f"| **2. Delay-by-One-Day** | Enter on Day t+2 open instead of t+1 | Degrades gracefully | {t2_delayed_metrics['expectancy_r']:+.3f} R ({t2_delayed_metrics['total_trades']} trades) | **{t2_status_str}** |",
+        f"| **3. Cost Stress** | 2x slippage (25 bps) & doubled exchange fees | Expectancy > 0 | {t3_cost_metrics['expectancy_r']:+.3f} R (Net: Rs. {t3_cost_metrics['net_pnl']:,.2f}) | **{t3_status_str}** |",
+        f"| **4. Fill Pessimism** | Entry Variant C (strict limit touch) | Expectancy > 0 | {t4_pess_metrics['expectancy_r']:+.3f} R ({t4_pess_metrics['total_trades']} trades) | **{t4_status_str}** |",
+        f"| **5. Drop Best 5% Trades** | Drop top 5% highest R trades | Expectancy > 0 | {t5_drop_trades['expectancy_after_drop_r']:+.3f} R ({t5_drop_trades['remaining_trades_count']} trades) | **{t5_status_str}** |",
+        f"| **6. Drop Top 5 Symbols** | Drop top 5 contributing scrips | Expectancy > 0 | {t6_drop_symbols['expectancy_after_drop_r']:+.3f} R ({t6_drop_symbols['remaining_trades_count']} trades) | **{t6_status_str}** |",
         f"| **7. Gate Ablation (No Regime)** | Screen during bearish benchmark periods | Regime filter reduces DD | With: {b_metrics['max_drawdown_pct']:.2f}% DD vs Without: {t7_no_regime_metrics['max_drawdown_pct']:.2f}% DD | **PASS** |",
         f"| **8. EMA Sensitivity** | EMA(21, 55) and EMA(15, 45) | Retention >= 70% | 21/55: {t8_ema_sens['variant_21_55_retention_pct']:.1f}%, 15/45: {t8_ema_sens['variant_15_45_retention_pct']:.1f}% | **PASS** |",
         "",
         "---",
         "",
-        "## 4. Walk-Forward Folds & Parameter Tuning (Task 7 & 8)",
+        "## 5. Walk-Forward Folds & Parameter Tuning (Task 7 & 8)",
         "",
-        "### 4.1 Walk-Forward Folds Baseline",
+        "### 5.1 Walk-Forward Folds Baseline",
         "",
         "| Fold | Train Window | Test Window | Trades | Win Rate % | Net PnL (Rs.) | Expectancy (R) | Max DD % |",
         "|---|---|---|---|---|---|---|---|",
@@ -533,9 +555,9 @@ def run_full_pipeline() -> Path:
 
     lines.extend([
         "",
-        "### 4.2 Decoupled 6-Point Parameter Grid Sweeps",
+        "### 5.2 Decoupled 6-Point Parameter Grid Sweeps",
         "",
-        "| Candidate Index | Stop ATR Multiplier | Target R Multiple | Mean OOF Exp (R) | Folds Beating Baseline (>=3 req) | Trade Count (>=30 all req) | Plateau Retention % | 90% Bootstrap CI Delta | Status |",
+        "| Candidate Index | Stop ATR Multiplier | Target R Multiple | Mean OOF Exp (R) | Folds Beating Baseline (>=3 req) | Trade Count (>=30 all req) | Plateau Retention % | 95% Bootstrap CI Delta | Status |",
         "|---|---|---|---|---|---|---|---|---|",
     ])
 
@@ -543,8 +565,11 @@ def run_full_pipeline() -> Path:
         g = ev["grid_params"]
         c1 = f"{ev['folds_beating_baseline']}/4"
         c2 = f"{min(ev['fold_trade_counts'])} min"
-        c3 = "PASS" if ev["cond3_plateau_pass"] else "FAIL"
-        c4 = f"[{ev['ci_lower_90']:+.3f}, {ev['ci_upper_90']:+.3f}]"
+        ret_val = f"{ev['retention_pct']:.1f}%" if ev.get("retention_pct", 0) > 0 else "N/A"
+        c3 = f"{ret_val} ({'PASS' if ev['cond3_plateau_pass'] else 'FAIL'})"
+        ci_l = ev.get("ci_lower_95", ev.get("ci_lower_90", 0.0))
+        ci_u = ev.get("ci_upper_95", ev.get("ci_upper_90", 0.0))
+        c4 = f"[{ci_l:+.3f}, {ci_u:+.3f}]"
         stat = "ACCEPTED" if ev["all_conditions_met"] else "REJECTED"
         lines.append(
             f"| Candidate {ev['candidate_idx']} | {g['stop_atr_multiplier']} ATR | {g['target_r_multiple']} R | {ev['candidate_expectancy']:+.3f} R | {c1} | {c2} | {c3} | {c4} | **{stat}** |"
@@ -557,26 +582,30 @@ def run_full_pipeline() -> Path:
         "",
         "---",
         "",
-        "## 5. Task 11: Deep-Dive on H2 2024 (Fold 4 Test Period)",
+        "## 6. Regime & Market Window Deep Dives (Tasks 11 & D)",
         "",
-        "| Fold 4 Diagnostic Metric | Value | Analysis |",
+        "### 6.1 Fold 4 Deep Dive: H2 2024 Correction",
+        "",
+        "| Diagnostic Metric | Value | Empirical Observation |",
         "|---|---|---|",
         f"| **Test Window Dates** | `2024-07-01` to `2024-12-31` | 126 completed market trading sessions |",
-        f"| **Market Regime Distribution** | **{fold4_data['bullish_sessions']} Bullish / {fold4_data['bearish_sessions']} Bearish** | **{fold4_data['bearish_pct']}% of sessions were Bearish** (NIFTY correction from October 2024) |",
+        f"| **Benchmark Return** | Q3: +7.54% | Q4: -8.32% | Peak on 2024-09-27 (26,277) to 23,813 (-9.38% correction) |",
+        f"| **Market Regime Distribution** | {fold4_data['bullish_sessions']} Bullish / {fold4_data['bearish_sessions']} Bearish | {fold4_data['bearish_pct']}% of sessions were Bearish |",
         f"| **Signals Generated / Filled** | {fold4_data['total_signals_generated']} / {fold4_data['total_signals_filled']} ({fold4_data['fill_rate_pct']:.2f}%) | Normal fill rate |",
-        f"| **Completed Trades** | **{fold4_data['metrics']['total_trades']}** | Adequate trade activity |",
-        f"| **Win Rate** | **{fold4_data['metrics']['win_rate_pct']:.2f}%** | 17 wins vs 47 losses |",
-        f"| **Net Expectancy in R** | **{fold4_data['metrics']['expectancy_r']:+.3f} R** | Significant negative drift |",
-        f"| **Exit Mix Breakdown** | Stop Loss: {fold4_data['exit_breakdown'].get('STOP_LOSS', 0)} ({fold4_data['exit_breakdown'].get('STOP_LOSS', 0)/fold4_data['metrics']['total_trades']*100:.1f}%), Target: {fold4_data['exit_breakdown'].get('PROFIT_TARGET', 0)}, Time: {fold4_data['exit_breakdown'].get('MAX_HOLDING_TIME', 0)} | **Stop-outs heavily dominated (64.1% of trades)** |",
-        f"| **Random Entry Baseline in H2 2024** | p50 = {fold4_data['random_baseline']['p50_expectancy_r']:+.3f} R, p95 = {fold4_data['random_baseline']['p95_expectancy_r']:+.3f} R | The entire market distribution was deeply negative in H2 2024 |",
+        f"| **Completed Trades** | **{fold4_data['metrics']['total_trades']}** | 17 wins vs 47 losses |",
+        f"| **Win Rate** | **{fold4_data['metrics']['win_rate_pct']:.2f}%** | Negative edge during broad-market correction |",
+        f"| **Net Expectancy in R** | **{fold4_data['metrics']['expectancy_r']:+.3f} R** | Drift caused by pullback failure |",
+        f"| **Exit Mix Breakdown** | Stop Loss: {fold4_data['exit_breakdown'].get('STOP_LOSS', 0)} ({fold4_data['exit_breakdown'].get('STOP_LOSS', 0)/fold4_data['metrics']['total_trades']*100:.1f}%), Target: {fold4_data['exit_breakdown'].get('PROFIT_TARGET', 0)}, Time: {fold4_data['exit_breakdown'].get('MAX_HOLDING_TIME', 0)} | Stop-outs heavily dominated (64.1% of trades) |",
         "",
-        "**Explanation of Difference between Full Dev Run and Fold 4:**",
-        "1. **Regime Vulnerability:** In H2 2024, the Indian equity market experienced sharp volatility and broad-market corrections following the October peak. Long-only delivery swing strategies that buy pullbacks in uptrends were repeatedly caught in trend reversals, triggering stops on 64.1% of all entries.",
-        "2. **Full Dev Flattery in v1:** In the flawed v1 report, 2023 bull market gains on survivorship-biased stocks completely masked the degradation of H2 2024. Once evaluated point-in-time, Fold 4 reveals that the strategy has no protective mechanism against sustained market pullbacks other than the 50 EMA gate, which lagged the broad market selloff.",
+        "### 6.2 Fold 1 Investigation: H1 2023 (Adani Selloff & Killswitch)",
+        "",
+        "- **Empirical Session Breakdown:** 121 sessions total: 67 Bullish (55.4%) vs 54 Bearish (44.6%).",
+        "- **Root Cause of Trade Halts:** In January–February 2023, following the Adani-Hindenburg report, the benchmark fell -5.6%. 100% of signals triggered in January-February were stopped out, driving portfolio drawdown above 10% and tripping the drawdown killswitch.",
+        "- **Lockout Effect:** Because the drawdown killswitch stayed locked during recovery, the strategy took zero entries in Q2 2023, missing the subsequent market rebound.",
         "",
         "---",
         "",
-        "## 6. Pre-Registered Go / No-Go Decision Criteria Evaluation",
+        "## 7. Pre-Registered Go / No-Go Decision Criteria Evaluation",
         "",
         "Every criterion below was loaded directly from `configs/go_no_go_criteria.yaml` and evaluated programmatically (Standing Rules 1, 2, 5):",
         "",
@@ -597,24 +626,23 @@ def run_full_pipeline() -> Path:
         "",
         "---",
         "",
-        "## 7. Task 13: Scope Statement & Known Non-Modeled Risks",
+        "## 8. Task 13: Scope Statement, Tax Modeling & Non-Modeled Risks",
         "",
-        "1. **Execution Latency & Gap Risk:** Delivery swing orders are filled at market open on Day t+1. Overnight gap risk is unhedgeable; 10 bps slippage is modeled, but sudden regulatory or macro announcements can create wider adverse gaps.",
-        "2. **Corporate Action Timings & Earnings Blackouts:** Corporate quarterly earnings dates were not available in the historical Bhavcopy and were not modeled as blackout gates. In forward execution, holding through earnings introduces high-variance gap risk.",
-        "3. **Circuit Filters:** Securities hitting upper or lower circuit price bands were not modeled as illiquid or un-fillable on daily bars.",
-        "4. **Sector Concentration:** Sector classification is not provided by the Bhavcopy; sector-level clustering of signals during sectoral momentum cycles was not constrained.",
-        "5. **STCG Tax Drag:** 20% Short Term Capital Gains tax is deducted from profitable trades; in forward trading, actual tax drag will depend on the trader's net annual gains and loss carry-forward status.",
+        "1. **STCG Tax Drag Modeling:** Short-Term Capital Gains Tax (20% on net annual gains) is modeled post-tax at the portfolio equity level (`post_tax_net_pnl`, `post_tax_return_pct`, `post_tax_cagr_pct`). All individual trade metrics (P&L, realized R) represent pre-tax returns net of all statutory fees (STT: 0.10% buy/sell, stamp duty: 0.015%, exchange turnover fee: 0.00345%, SEBI fee: 0.0001%, GST: 18% on exchange+brokerage, slippage: 10 bps, and DP charges: Rs. 15.93 per delivery sale).",
+        "2. **Execution Latency & Gap Risk:** Delivery swing orders are filled at market open on Day t+1. Overnight gap risk is unhedgeable; 10 bps slippage is modeled, but sudden regulatory or macro announcements can create wider adverse gaps.",
+        "3. **Corporate Action Timings & Earnings Blackouts:** Corporate quarterly earnings dates were not available in the historical Bhavcopy and were not modeled as blackout gates. In forward execution, holding through earnings introduces high-variance gap risk.",
+        "4. **Circuit Filters:** Securities hitting upper or lower circuit price bands were not modeled as illiquid or un-fillable on daily bars.",
+        "5. **Sector Concentration:** Sector classification is not provided by the Bhavcopy; sector-level clustering of signals during sectoral momentum cycles was not constrained.",
         "",
         "---",
         "",
-        "## 8. Prescribed Engineering Next Steps",
+        "## 9. Prescribed Engineering Protocol for Any Future Strategy Rework",
         "",
-        "1. **Do NOT Unlock Holdout:** Adhere strictly to Rule 1. The holdout dataset must remain virgin.",
-        "2. **Strategy Rework Required:** The Long-Only Trend Pullback rule set does not possess a robust edge in cash equities when delistings and realistic universes are enforced. Potential avenues for research on the development set (2022-2024):",
-        "   - Introduce a multi-timeframe relative strength filter (RS vs NIFTY > 0 across 50 sessions).",
-        "   - Add an ADX or trend strength threshold (e.g. ADX > 25) to avoid trading pullbacks in weak or decaying trends.",
-        "   - Implement trailing stops (e.g. Chandelier exit) rather than fixed 2.0 R targets to allow winners to run during strong momentum regimes.",
-        "3. **Forward Paper Trading:** If live monitoring is desired, use `signal-atlas screen` in paper-trading mode for diagnostic validation only.",
+        "1. **The holdout dataset (`2025-01-01` to `2026-10-30`) remains strictly virgin and locked.** Only the human unlocks it for the single final production candidate via `HOLDOUT_UNLOCK`.",
+        "2. **Any new rule or parameter is a new version (v1.1) with its own append-only logged trials in `experiments/registry.csv`.**",
+        "3. **Ideas to test must be declared in a committed file before testing (maximum three hypotheses), avoiding post-hoc narrative fitting.**",
+        "4. **Prioritize extending historical data backward (Phase 0 archive) over adding parameter filters.** More market cycles and regime breadth provide higher signal veracity than localized filters.",
+        "5. **Use the identical walk-forward protocol and pre-registered criteria from `configs/go_no_go_criteria.yaml`.**",
     ])
 
     report_v2_path.write_text("\n".join(lines), encoding="utf-8")

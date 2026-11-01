@@ -141,7 +141,10 @@ def run_real_random_entry_baseline(
 
             gross_pnl = exit_p - entry_p
             buy_fees = (entry_p * (slip_rate + stt_rate + exch_rate + sebi_rate + stamp_rate + (exch_rate + sebi_rate) * gst_rate)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            sell_fees = (exit_p * (slip_rate + stt_rate + exch_rate + sebi_rate + (exch_rate + sebi_rate) * gst_rate)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) + dp_charge
+            # DP charge is Rs 15.93 per position (not per share); scale by typical position shares (Rs 100k capital)
+            typical_qty = max(1, int(Decimal("100000.00") / entry_p)) if entry_p > Decimal("0") else 1
+            dp_fee_per_share = (dp_charge / Decimal(typical_qty)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+            sell_fees = (exit_p * (slip_rate + stt_rate + exch_rate + sebi_rate + (exch_rate + sebi_rate) * gst_rate)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) + dp_fee_per_share
             net_pnl = gross_pnl - buy_fees - sell_fees
             r_mult = float(net_pnl / risk_amt) if risk_amt > 0 else 0.0
             trade_r_multiples.append(r_mult)

@@ -100,6 +100,7 @@ class BacktestEngine:
     """
     Unified, deterministic simulation engine executing live risk and execution rules.
     """
+    _feature_cache: Dict[Tuple[str, datetime.date], TechnicalFeatures] = {}
 
     def __init__(self, config: Optional[BacktestEngineConfig] = None):
         self.config = config or BacktestEngineConfig()
@@ -142,6 +143,9 @@ class BacktestEngine:
             slippage_bps=Decimal("0.0025") if stress_costs else Decimal("0.0010"),
         )
         dp_charge = self.config.dp_charge_per_scrip * (Decimal("2.0") if stress_costs else Decimal("1.0"))
+
+        if not hasattr(self, "_feature_cache") or self._feature_cache is None:
+            self._feature_cache: Dict[Tuple[str, datetime.date], TechnicalFeatures] = {}
 
         feature_engine = TechnicalFeatureEngine(min_required_sessions=self.config.min_history_sessions)
 
@@ -393,26 +397,20 @@ class BacktestEngine:
                     if qty <= 0:
                         continue
 
-                    # Portfolio open risk constraint (max 6%)
+                    # Portfolio open risk constraint (max 6% - matching live RiskEngine rule 6)
                     trade_risk = risk_per_sh * Decimal(qty)
                     if (current_open_risk + trade_risk) > max_open_risk_allowed:
-                        rem_risk = max_open_risk_allowed - current_open_risk
-                        if rem_risk <= Decimal("0"):
-                            continue
-                        qty = int((rem_risk / risk_per_sh).quantize(Decimal("1"), rounding=ROUND_DOWN))
-                        if qty <= 0:
-                            continue
+                        continue
+
+                    # Minimum trade risk check: reject odd-lots / micro-positions (< 0.2% equity)
+                    min_trade_risk = current_equity * Decimal("0.002")
+                    if trade_risk < min_trade_risk:
+                        continue
 
                     buy_breakdown = cost_model.calculate_buy_costs(fill_p, qty)
                     required_cash = -buy_breakdown.net_cash_flow
                     if required_cash > cash:
-                        qty = int((cash / (fill_p * Decimal("1.01"))).quantize(Decimal("1"), rounding=ROUND_DOWN))
-                        if qty <= 0:
-                            continue
-                        buy_breakdown = cost_model.calculate_buy_costs(fill_p, qty)
-                        required_cash = -buy_breakdown.net_cash_flow
-                        if required_cash > cash:
-                            continue
+                        continue
 
                     cash -= required_cash
                     current_open_risk += risk_per_sh * Decimal(qty)
@@ -598,12 +596,16 @@ class BacktestEngine:
                 valid_tvs = [b.traded_value for b in trailing_bars if b.traded_value is not None]
                 trailing_adtv = sum(valid_tvs) / Decimal(len(valid_tvs)) if valid_tvs else Decimal("0.00")
 
-                feats = feature_engine.extract_features(
-                    instrument_id=inst_id,
-                    symbol=sym,
-                    as_of_date=curr_date,
-                    records=history_slice,
-                )
+                cache_key = (inst_id, curr_date)
+                feats = BacktestEngine._feature_cache.get(cache_key)
+                if feats is None:
+                    feats = feature_engine.extract_features(
+                        instrument_id=inst_id,
+                        symbol=sym,
+                        as_of_date=curr_date,
+                        records=history_slice,
+                    )
+                    BacktestEngine._feature_cache[cache_key] = feats
                 cand = strategy.evaluate_candidate(feats, mkt_ctx)
                 if cand.signal_state == SignalState.BUY and cand.is_valid:
                     cand.adtv = trailing_adtv

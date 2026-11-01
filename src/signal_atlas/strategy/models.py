@@ -58,7 +58,7 @@ class TrendPullbackParameters(StrategyParameters):
     # Invalidation & Target (ATR multiples or independent R-multiples per Task 7)
     stop_atr_multiplier: Decimal = Decimal("1.50")
     target_atr_multiplier: Decimal = Decimal("3.00")
-    target_r_multiple: Optional[Decimal] = None  # When set, target = entry + target_r_multiple * risk
+    target_r_multiple: Optional[Decimal] = Decimal("2.00")  # When set, target = entry + target_r_multiple * risk
     min_reward_to_risk: Decimal = Decimal("1.50")
 
     # Next-session entry validation bounds

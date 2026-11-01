@@ -261,6 +261,7 @@ class FastSimulationRunner:
         if max_holding_sessions is not None and max_holding_sessions != self.config.max_holding_sessions:
             cfg = self.config.model_copy(update={"max_holding_sessions": max_holding_sessions})
             eng = BacktestEngine(config=cfg)
+            eng._feature_cache = getattr(self.engine, "_feature_cache", {})
         else:
             eng = self.engine
 

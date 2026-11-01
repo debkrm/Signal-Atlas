@@ -1,8 +1,9 @@
 strategy_id: trend_pullback
 strategy_version: v1.0-frozen
-frozen_timestamp: '2026-11-01T11:14:51.988949+00:00'
-selection_verdict: 'TUNED: Selected parameter set {''stop_atr_multiplier'': Decimal(''2.0''),
-  ''target_r_multiple'': Decimal(''1.5'')} satisfying all 4 pre-registered criteria.'
+frozen_timestamp: '2026-11-01T12:58:16.498262+00:00'
+selection_verdict: 'NO ACCEPTABLE CONFIGURATION: Tuning did not find an acceptable
+  parameter set satisfying all pre-registered criteria; all candidates show non-positive
+  out-of-fold expectancy. Baseline retained for development analysis only.'
 parameters:
   strategy_id: trend_pullback
   strategy_version: v1.0
@@ -12,9 +13,9 @@ parameters:
   min_rsi: '40.00'
   max_rsi: '60.00'
   require_weekly_trend_bullish: true
-  stop_atr_multiplier: '2.0'
+  stop_atr_multiplier: '1.50'
   target_atr_multiplier: '3.00'
-  target_r_multiple: '1.5'
+  target_r_multiple: '2.00'
   min_reward_to_risk: '1.50'
   max_entry_gap_pct: '0.02'
 portfolio:

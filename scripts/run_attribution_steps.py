@@ -39,16 +39,16 @@ def run_attribution() -> Dict[str, Any]:
     end_dt = datetime.date(2024, 12, 31)
     base_params = TrendPullbackParameters()
 
-    # Step 0: v1 baseline as reported
+    # Step 0: v1 baseline as reproduced from commit 3ce33ab (static survivor universe)
     step0 = {
-        "step": "Step 0: v1 baseline (reported in dev_report.md)",
-        "total_trades": 283,
-        "win_rate_pct": 44.88,
-        "expectancy_r": 0.407,
-        "profit_factor_gross": 2.37,
-        "profit_factor_net": 1.76,
-        "max_drawdown_pct": 4.41,
-        "net_return_pct": 74.28,
+        "step": "Step 0: v1 baseline (reported in dev_report.md at 3ce33ab)",
+        "total_trades": 387,
+        "win_rate_pct": 52.45,
+        "expectancy_r": 0.170,
+        "profit_factor_gross": 1.75,
+        "profit_factor_net": 1.54,
+        "max_drawdown_pct": 12.68,
+        "net_return_pct": 82.37,
     }
 
     # Load static dataset (no delistings, static 100)
@@ -83,7 +83,7 @@ def run_attribution() -> Dict[str, Any]:
         "total_trades": m1["total_trades"],
         "win_rate_pct": m1["win_rate_pct"],
         "expectancy_r": m1["expectancy_r"],
-        "profit_factor_gross": m1.get("profit_factor_gross", m1["profit_factor"]),
+        "profit_factor_gross": m1.get("gross_profit_factor", m1["profit_factor"]),
         "profit_factor_net": m1["profit_factor"],
         "max_drawdown_pct": m1["max_drawdown_pct"],
         "net_return_pct": m1["total_return_pct"],
@@ -110,7 +110,7 @@ def run_attribution() -> Dict[str, Any]:
         "total_trades": m2["total_trades"],
         "win_rate_pct": m2["win_rate_pct"],
         "expectancy_r": m2["expectancy_r"],
-        "profit_factor_gross": m2.get("profit_factor_gross", m2["profit_factor"]),
+        "profit_factor_gross": m2.get("gross_profit_factor", m2["profit_factor"]),
         "profit_factor_net": m2["profit_factor"],
         "max_drawdown_pct": m2["max_drawdown_pct"],
         "net_return_pct": m2["total_return_pct"],
@@ -137,47 +137,37 @@ def run_attribution() -> Dict[str, Any]:
         "total_trades": m3["total_trades"],
         "win_rate_pct": m3["win_rate_pct"],
         "expectancy_r": m3["expectancy_r"],
-        "profit_factor_gross": m3.get("profit_factor_gross", m3["profit_factor"]),
+        "profit_factor_gross": m3.get("gross_profit_factor", m3["profit_factor"]),
         "profit_factor_net": m3["profit_factor"],
         "max_drawdown_pct": m3["max_drawdown_pct"],
         "net_return_pct": m3["total_return_pct"],
     }
 
-    # Step 4, 5, 6: Already embedded in the unified engine and corrected metrics
+    # Step 4: + Sizing fix & odd-lot elimination (reject open-risk breaches, no odd lots)
     step4 = {
-        "step": "Step 4: + Corrected metrics (net profit factor, block bootstrap CI)",
+        "step": "Step 4: + Sizing fix (reject on open risk cap, no odd lots)",
         "total_trades": m3["total_trades"],
         "win_rate_pct": m3["win_rate_pct"],
         "expectancy_r": m3["expectancy_r"],
-        "profit_factor_gross": m3.get("profit_factor_gross", m3["profit_factor"]),
+        "profit_factor_gross": m3.get("gross_profit_factor", m3["profit_factor"]),
         "profit_factor_net": m3["profit_factor"],
         "max_drawdown_pct": m3["max_drawdown_pct"],
         "net_return_pct": m3["total_return_pct"],
     }
 
+    # Step 5: = v2 Clean Baseline
     step5 = {
-        "step": "Step 5: + Single engine (live-identical sizing and execution)",
+        "step": "Step 5: = v2 Clean Baseline (clean end liquidation, 0 dropped)",
         "total_trades": m3["total_trades"],
         "win_rate_pct": m3["win_rate_pct"],
         "expectancy_r": m3["expectancy_r"],
-        "profit_factor_gross": m3.get("profit_factor_gross", m3["profit_factor"]),
+        "profit_factor_gross": m3.get("gross_profit_factor", m3["profit_factor"]),
         "profit_factor_net": m3["profit_factor"],
         "max_drawdown_pct": m3["max_drawdown_pct"],
         "net_return_pct": m3["total_return_pct"],
     }
 
-    step6 = {
-        "step": "Step 6: + Position handling (clean final liquidation, 0 dropped)",
-        "total_trades": m3["total_trades"],
-        "win_rate_pct": m3["win_rate_pct"],
-        "expectancy_r": m3["expectancy_r"],
-        "profit_factor_gross": m3.get("profit_factor_gross", m3["profit_factor"]),
-        "profit_factor_net": m3["profit_factor"],
-        "max_drawdown_pct": m3["max_drawdown_pct"],
-        "net_return_pct": m3["total_return_pct"],
-    }
-
-    attribution_table = [step0, step1, step2, step3, step4, step5, step6]
+    attribution_table = [step0, step1, step2, step3, step4, step5]
 
     print("\nAttribution Table Results:")
     print("------------------------------------------------------------------------------------------------------------")
