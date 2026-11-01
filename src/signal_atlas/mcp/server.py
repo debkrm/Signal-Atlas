@@ -187,17 +187,21 @@ def portfolio_view() -> Dict[str, Any]:
 
 
 @mcp.tool()
-def get_fundamentals_snapshot(symbol: str) -> Dict[str, Any]:
+def get_fundamentals_snapshot(
+    symbol: str,
+    as_of_date: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    Retrieves company fundamentals and quarterly financial disclosures.
-    (Note: Scheduled for integration in Phase 6; returns graceful advisory status).
+    Retrieves point-in-time financial fundamentals, valuation metrics, and promoter holding/pledge data.
 
     Args:
         symbol: NSE stock symbol.
+        as_of_date: Optional historical date (YYYY-MM-DD). If omitted, retrieves latest fundamentals.
     """
     clean_symbol = symbol.strip().upper() if symbol else ""
+    dt = _parse_date(as_of_date)
     svc = get_research_service()
-    raw = svc.get_fundamentals_snapshot(symbol=clean_symbol)
+    raw = svc.get_fundamentals_snapshot(symbol=clean_symbol, as_of_date=dt)
     envelope = MCPResponseEnvelope.create(
         as_of=raw["as_of"],
         data_status=raw["data_status"],
@@ -208,18 +212,25 @@ def get_fundamentals_snapshot(symbol: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def get_filings(symbol: str, days: int = 30) -> Dict[str, Any]:
+def get_filings(
+    symbol: str,
+    days: int = 30,
+    category: Optional[str] = None,
+    as_of_date: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Retrieves official NSE corporate announcements and filings over trailing N days.
-    (Note: Scheduled for integration in Phase 6; returns graceful advisory status).
 
     Args:
         symbol: NSE stock symbol.
         days: Trailing calendar days to scan (default: 30).
+        category: Optional category filter (e.g. RESULTS, FUNDRAISING, PROMOTER_ACTION).
+        as_of_date: Optional reference date (YYYY-MM-DD).
     """
     clean_symbol = symbol.strip().upper() if symbol else ""
+    dt = _parse_date(as_of_date)
     svc = get_research_service()
-    raw = svc.get_filings(symbol=clean_symbol, days=days)
+    raw = svc.get_filings(symbol=clean_symbol, days=days, category=category, as_of_date=dt)
     envelope = MCPResponseEnvelope.create(
         as_of=raw["as_of"],
         data_status=raw["data_status"],
@@ -230,18 +241,24 @@ def get_filings(symbol: str, days: int = 30) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def get_news(symbol: str, days: int = 30) -> Dict[str, Any]:
+def get_news(
+    symbol: str,
+    days: int = 30,
+    as_of_date: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Retrieves verified news articles and discovery events for a company over trailing N days.
-    (Note: Scheduled for integration in Phase 6; returns graceful advisory status).
+    News text is treated strictly as untrusted input per Architecture Section 13.3.
 
     Args:
         symbol: NSE stock symbol.
         days: Trailing calendar days to scan (default: 30).
+        as_of_date: Optional reference date (YYYY-MM-DD).
     """
     clean_symbol = symbol.strip().upper() if symbol else ""
+    dt = _parse_date(as_of_date)
     svc = get_research_service()
-    raw = svc.get_news(symbol=clean_symbol, days=days)
+    raw = svc.get_news(symbol=clean_symbol, days=days, as_of_date=dt)
     envelope = MCPResponseEnvelope.create(
         as_of=raw["as_of"],
         data_status=raw["data_status"],

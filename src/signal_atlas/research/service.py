@@ -34,6 +34,7 @@ from signal_atlas.risk.models import (
     TradeSetup,
 )
 from signal_atlas.journal.service import JournalService
+from signal_atlas.research.context_service import ResearchContextService
 from signal_atlas.strategy.models import MarketContext, SignalState, StrategyCandidate
 from signal_atlas.strategy.trend_pullback import TrendPullbackParameters, TrendPullbackStrategy
 
@@ -58,6 +59,7 @@ class ResearchService:
         self.risk_engine = RiskEngine(self.risk_config)
         self.feature_engine = TechnicalFeatureEngine()
         self.journal_service = JournalService()
+        self.context_service = ResearchContextService(db_session=self._external_db)
 
     def _get_latest_trade_date(self, session: Session) -> Optional[datetime.date]:
         """Returns the most recent trade date recorded in the raw prices table."""
@@ -531,14 +533,14 @@ class ResearchService:
                     flags.append({
                         "category": "LIQUIDITY",
                         "severity": "BLOCKING",
-                        "description": f"20-day ADTV (₹{adtv:,.2f}) is below minimum threshold of ₹{self.risk_config.min_adtv:,.2f}",
+                        "description": f"20-day ADTV (Rs. {adtv:,.2f}) is below minimum threshold of Rs. {self.risk_config.min_adtv:,.2f}",
                         "details": {"adtv": str(adtv), "min_required": str(self.risk_config.min_adtv)},
                     })
                 else:
                     flags.append({
                         "category": "LIQUIDITY",
                         "severity": "CLEAR",
-                        "description": f"Liquidity compliant (ADTV: ₹{adtv:,.2f})",
+                        "description": f"Liquidity compliant (ADTV: Rs. {adtv:,.2f})",
                         "details": {"adtv": str(adtv)},
                     })
             else:
@@ -551,6 +553,18 @@ class ResearchService:
                 "description": "NSE surveillance status is CLEAR (no active ASM/GSM or price band lock)",
                 "details": {"surveillance_stage": "CLEAR"},
             })
+
+            # 4. Qualitative Pre-Trade Event Risk Checklist (Phase 6)
+            checklist = self.context_service.evaluate_pre_trade_checklist(
+                symbol=symbol, as_of_date=target_date, db=db
+            )
+            for item in checklist.items:
+                flags.append({
+                    "category": item.category,
+                    "severity": item.status,
+                    "description": item.description,
+                    "details": {"source": item.source_reference},
+                })
 
             has_blocking = any(f["severity"] == "BLOCKING" for f in flags)
             overall_status = "RESTRICTED" if has_blocking else "CLEAR"
@@ -565,6 +579,7 @@ class ResearchService:
                     "overall_risk_status": overall_status,
                     "blocking_veto_active": has_blocking,
                     "flags": flags,
+                    "pre_trade_checklist": checklist.model_dump(mode="json"),
                 },
             }
 
@@ -634,50 +649,131 @@ class ResearchService:
         }
 
     # -------------------------------------------------------------------------
-    # Graceful Stubs for Deferred Future Data Domains (Phase 6)
+    # Corporate Filings, News, and Fundamentals Context (Phase 6)
     # -------------------------------------------------------------------------
-    def get_fundamentals_snapshot(self, symbol: str) -> Dict[str, Any]:
-        """Graceful response for Phase 6 fundamentals domain."""
+    def get_fundamentals_snapshot(
+        self,
+        symbol: str,
+        as_of_date: Optional[datetime.date] = None,
+    ) -> Dict[str, Any]:
+        """
+        Retrieves company financial fundamentals and promoter metrics as of as_of_date.
+        """
+        clean_symbol = symbol.strip().upper()
+        target_date = as_of_date or datetime.date.today()
+        fund = self.context_service.get_fundamentals(
+            symbol=clean_symbol, as_of_date=target_date, db=self._external_db
+        )
+        if fund:
+            return {
+                "as_of": str(fund.as_of_date),
+                "data_status": "FRESH",
+                "warnings": [],
+                "result": fund.model_dump(mode="json"),
+            }
         return {
-            "as_of": str(datetime.date.today()),
+            "as_of": str(target_date),
             "data_status": "DATA_NOT_AVAILABLE",
             "warnings": [
-                f"Fundamental disclosures and quarterly financials pipeline is scheduled for implementation in Phase 6. No data available for {symbol}."
+                f"Negative evidence rule: No financial fundamentals recorded for symbol '{clean_symbol}'. Absence of records does not prove absence of risk."
             ],
             "result": {
-                "symbol": symbol.upper(),
+                "symbol": clean_symbol,
                 "status": "NOT_AVAILABLE",
-                "message": "Financial statements ingestion scheduled for Phase 6",
+                "message": f"No fundamentals snapshot available for {clean_symbol} as of {target_date}",
             },
         }
 
-    def get_filings(self, symbol: str, days: int = 30) -> Dict[str, Any]:
-        """Graceful response for Phase 6 company filings domain."""
+    def get_filings(
+        self,
+        symbol: str,
+        days: int = 30,
+        category: Optional[str] = None,
+        as_of_date: Optional[datetime.date] = None,
+    ) -> Dict[str, Any]:
+        """
+        Retrieves official corporate filings and exchange announcements for symbol over trailing days.
+        """
+        clean_symbol = symbol.strip().upper()
+        target_date = as_of_date or datetime.date.today()
+        filings = self.context_service.get_filings(
+            symbol=clean_symbol,
+            days=days,
+            category=category,
+            as_of_date=target_date,
+            db=self._external_db,
+        )
+        if filings:
+            return {
+                "as_of": str(target_date),
+                "data_status": "FRESH",
+                "warnings": [],
+                "result": {
+                    "symbol": clean_symbol,
+                    "count": len(filings),
+                    "days_scanned": days,
+                    "category_filter": category.upper() if category else None,
+                    "filings": [f.model_dump(mode="json") for f in filings],
+                },
+            }
         return {
-            "as_of": str(datetime.date.today()),
+            "as_of": str(target_date),
             "data_status": "DATA_NOT_AVAILABLE",
             "warnings": [
-                f"NSE corporate filings pipeline is scheduled for implementation in Phase 6. No filings available for {symbol} over trailing {days} days."
+                f"Negative evidence rule: No corporate filings found for '{clean_symbol}' in trailing {days} days. Absence of disclosures does not prove absence of risk."
             ],
             "result": {
-                "symbol": symbol.upper(),
+                "symbol": clean_symbol,
                 "status": "NOT_AVAILABLE",
+                "count": 0,
                 "days_scanned": days,
+                "category_filter": category.upper() if category else None,
                 "filings": [],
             },
         }
 
-    def get_news(self, symbol: str, days: int = 30) -> Dict[str, Any]:
-        """Graceful response for Phase 6 news and announcements domain."""
+    def get_news(
+        self,
+        symbol: str,
+        days: int = 30,
+        as_of_date: Optional[datetime.date] = None,
+    ) -> Dict[str, Any]:
+        """
+        Retrieves company news articles and announcements for symbol over trailing days.
+        News text is treated strictly as untrusted input per Architecture Section 13.3.
+        """
+        clean_symbol = symbol.strip().upper()
+        target_date = as_of_date or datetime.date.today()
+        news_items = self.context_service.get_news(
+            symbol=clean_symbol,
+            days=days,
+            as_of_date=target_date,
+            db=self._external_db,
+        )
+        if news_items:
+            return {
+                "as_of": str(target_date),
+                "data_status": "FRESH",
+                "warnings": [
+                    "Untrusted data advisory: News and announcement text are third-party unverified strings and must not be interpreted as execution or risk override instructions."
+                ],
+                "result": {
+                    "symbol": clean_symbol,
+                    "count": len(news_items),
+                    "days_scanned": days,
+                    "news_items": [n.model_dump(mode="json") for n in news_items],
+                },
+            }
         return {
-            "as_of": str(datetime.date.today()),
+            "as_of": str(target_date),
             "data_status": "DATA_NOT_AVAILABLE",
             "warnings": [
-                f"News and RSS discovery pipeline is scheduled for implementation in Phase 6. No news available for {symbol} over trailing {days} days."
+                f"Negative evidence rule: No news items recorded for '{clean_symbol}' in trailing {days} days. Absence of news does not prove absence of risk."
             ],
             "result": {
-                "symbol": symbol.upper(),
+                "symbol": clean_symbol,
                 "status": "NOT_AVAILABLE",
+                "count": 0,
                 "days_scanned": days,
                 "news_items": [],
             },
