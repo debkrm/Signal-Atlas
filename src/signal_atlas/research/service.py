@@ -157,6 +157,15 @@ class ResearchService:
                     (InstrumentSymbolHistory.valid_to == None) | (InstrumentSymbolHistory.valid_to >= as_of_date),
                 )
             ).scalars().first()
+            if not inst_hist:
+                inst_hist = session.execute(
+                    select(InstrumentSymbolHistory)
+                    .where(
+                        InstrumentSymbolHistory.symbol == sym,
+                        InstrumentSymbolHistory.valid_from <= as_of_date,
+                    )
+                    .order_by(InstrumentSymbolHistory.valid_from.desc())
+                ).scalars().first()
 
             if inst_hist:
                 history = get_point_in_time_adjusted_history(inst_hist.instrument_id, as_of_date, db=session)
@@ -305,6 +314,15 @@ class ResearchService:
                         (InstrumentSymbolHistory.valid_to == None) | (InstrumentSymbolHistory.valid_to >= target_date),
                     )
                 ).scalars().first()
+                if not sym_rec:
+                    sym_rec = db.execute(
+                        select(InstrumentSymbolHistory)
+                        .where(
+                            InstrumentSymbolHistory.instrument_id == inst_id,
+                            InstrumentSymbolHistory.valid_from <= target_date,
+                        )
+                        .order_by(InstrumentSymbolHistory.valid_from.desc())
+                    ).scalars().first()
                 symbol = sym_rec.symbol if sym_rec else inst_id
 
                 history = get_point_in_time_adjusted_history(inst_id, target_date, db=db)
@@ -386,6 +404,15 @@ class ResearchService:
                     (InstrumentSymbolHistory.valid_to == None) | (InstrumentSymbolHistory.valid_to >= target_date),
                 )
             ).scalars().first()
+            if not sym_rec:
+                sym_rec = db.execute(
+                    select(InstrumentSymbolHistory)
+                    .where(
+                        InstrumentSymbolHistory.symbol == symbol.upper(),
+                        InstrumentSymbolHistory.valid_from <= target_date,
+                    )
+                    .order_by(InstrumentSymbolHistory.valid_from.desc())
+                ).scalars().first()
 
             if not sym_rec:
                 # Query active symbols for suggestion (prioritize substring and prefix matches, then fuzzy)
@@ -524,6 +551,15 @@ class ResearchService:
                     (InstrumentSymbolHistory.valid_to == None) | (InstrumentSymbolHistory.valid_to >= target_date),
                 )
             ).scalars().first()
+            if not sym_rec:
+                sym_rec = db.execute(
+                    select(InstrumentSymbolHistory)
+                    .where(
+                        InstrumentSymbolHistory.symbol == symbol.upper(),
+                        InstrumentSymbolHistory.valid_from <= target_date,
+                    )
+                    .order_by(InstrumentSymbolHistory.valid_from.desc())
+                ).scalars().first()
 
             warnings: List[str] = []
             flags: List[Dict[str, Any]] = []
