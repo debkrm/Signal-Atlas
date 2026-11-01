@@ -215,6 +215,19 @@ class ResearchService:
 
             # Market context
             mkt_status = self.get_market_status(target_date, session=db)
+            if as_of_date is None and mkt_status.get("data_status") == "STALE":
+                stale_warnings = list(mkt_status.get("warnings", []))
+                stale_warnings.append(
+                    "STALENESS GUARD: Live screening blocked because database prices are stale. "
+                    "Ingest latest trading sessions or specify an explicit historical --date."
+                )
+                return {
+                    "as_of": str(target_date),
+                    "data_status": "STALE",
+                    "warnings": stale_warnings,
+                    "result": {"setups_count": 0, "setups": []},
+                }
+
             is_bullish = True if ignore_regime else mkt_status["result"]["is_bullish"]
             mkt_ctx = MarketContext(
                 as_of_date=target_date,
@@ -430,8 +443,27 @@ class ResearchService:
                 history,
             )
 
-            # Market context
+            # Market context for setup
             mkt_status = self.get_market_status(target_date, session=db)
+            if as_of_date is None and mkt_status.get("data_status") == "STALE":
+                stale_warnings = list(mkt_status.get("warnings", []))
+                stale_warnings.append(
+                    "STALENESS GUARD: Live setup blocked because database prices are stale. "
+                    "Ingest latest trading sessions or specify an explicit historical --date."
+                )
+                return {
+                    "as_of": str(target_date),
+                    "data_status": "STALE",
+                    "warnings": stale_warnings,
+                    "result": {
+                        "symbol": symbol.upper(),
+                        "instrument_id": inst_id,
+                        "is_approved": False,
+                        "signal_state": "AVOID",
+                        "primary_rejection_reason": "STALENESS GUARD: Live trade setup blocked because database prices are stale.",
+                    },
+                }
+
             is_bullish = True if ignore_regime else mkt_status["result"]["is_bullish"]
             mkt_ctx = MarketContext(
                 as_of_date=target_date,
@@ -467,7 +499,7 @@ class ResearchService:
 
             return {
                 "as_of": str(target_date),
-                "data_status": "FRESH",
+                "data_status": mkt_status.get("data_status", "FRESH"),
                 "warnings": setup.warnings,
                 "result": setup.model_dump(mode="json"),
             }
