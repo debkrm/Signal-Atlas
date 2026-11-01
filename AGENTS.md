@@ -73,3 +73,12 @@ This version has breaking changes — APIs, conventions, and file structure may 
 This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
 
 <!-- END:nextjs-agent-rules -->
+
+## Standing Rules for Backtesting & Quantitative Verification
+
+1. **Verdicts are computed, never typed.** Every PASS, FAIL, GO, status label, and sentence in a report is generated from computed values. No hard-coded adjectives such as HEALTHY, OPTIMAL, DISCIPLINED, CONTROLLED, or "Robust Plateau".
+2. **Criteria live in a committed file.** Create `configs/go_no_go_criteria.yaml` with the exact thresholds from Section 8 of `backtest_and_tuning_plan.md`, commit it, and load it in code. Never edit thresholds after a run.
+3. **The registry is append-only.** Every run is logged, including exploratory runs, train-window runs, and sanity-test runs. Any rule added after seeing results is logged as a trial with its rationale.
+4. **One engine.** No second implementation of strategy filters, fills, or sizing.
+5. **Do not create `HOLDOUT_UNLOCK`.** Only the human does.
+6. **A criterion is PASS only if a printed computation or unit test backs it.** If something was not run, the report says "NOT RUN".

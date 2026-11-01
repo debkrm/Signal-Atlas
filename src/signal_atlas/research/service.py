@@ -12,7 +12,9 @@ Provides deterministic, interface-independent quantitative research operations:
 
 import datetime
 from decimal import Decimal
+import json
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
@@ -157,6 +159,15 @@ class ResearchService:
                     (InstrumentSymbolHistory.valid_to == None) | (InstrumentSymbolHistory.valid_to >= as_of_date),
                 )
             ).scalars().first()
+            if not inst_hist:
+                inst_hist = session.execute(
+                    select(InstrumentSymbolHistory)
+                    .where(
+                        InstrumentSymbolHistory.symbol == sym,
+                        InstrumentSymbolHistory.valid_from <= as_of_date,
+                    )
+                    .order_by(InstrumentSymbolHistory.valid_from.desc())
+                ).scalars().first()
 
             if inst_hist:
                 history = get_point_in_time_adjusted_history(inst_hist.instrument_id, as_of_date, db=session)
@@ -215,6 +226,19 @@ class ResearchService:
 
             # Market context
             mkt_status = self.get_market_status(target_date, session=db)
+            if as_of_date is None and mkt_status.get("data_status") == "STALE":
+                stale_warnings = list(mkt_status.get("warnings", []))
+                stale_warnings.append(
+                    "STALENESS GUARD: Live screening blocked because database prices are stale. "
+                    "Ingest latest trading sessions or specify an explicit historical --date."
+                )
+                return {
+                    "as_of": str(target_date),
+                    "data_status": "STALE",
+                    "warnings": stale_warnings,
+                    "result": {"setups_count": 0, "setups": []},
+                }
+
             is_bullish = True if ignore_regime else mkt_status["result"]["is_bullish"]
             mkt_ctx = MarketContext(
                 as_of_date=target_date,
@@ -254,6 +278,7 @@ class ResearchService:
                     )
                     .distinct()
                 )
+                active_inst_ids = db.execute(subq).scalars().all()
             elif scan_all:
                 # Scan all active EQ series instruments on target_date without limiting to top 100 turnover
                 subq = (
@@ -264,21 +289,45 @@ class ResearchService:
                     )
                     .order_by(DailyPriceRaw.traded_value.desc())
                 )
+                active_inst_ids = db.execute(subq).scalars().all()
             else:
-                # Pre-filter by liquid volume (at least 20% of min ADTV) ordered by traded_value
-                min_daily_turnover = self.risk_config.min_adtv * Decimal("0.20")
-                subq = (
-                    select(DailyPriceRaw.instrument_id)
-                    .where(
-                        DailyPriceRaw.trade_date == target_date,
-                        DailyPriceRaw.series == "EQ",
-                        DailyPriceRaw.traded_value >= min_daily_turnover,
-                    )
-                    .order_by(DailyPriceRaw.traded_value.desc())
-                    .limit(100)
-                )
+                # Point-in-Time universe as of target_date (Task 15)
+                pit_cache_path = Path("data/pit_universe_monthly_2022_2024.json")
+                pit_insts = None
+                if pit_cache_path.exists():
+                    try:
+                        pit_data = json.loads(pit_cache_path.read_text(encoding="utf-8"))
+                        snapshots = pit_data.get("snapshots", {})
+                        sorted_rebal = sorted(datetime.date.fromisoformat(k) for k in snapshots.keys())
+                        valid_rebals = [rd for rd in sorted_rebal if rd <= target_date]
+                        if valid_rebals:
+                            latest_rd = valid_rebals[-1]
+                            pit_insts = snapshots[latest_rd.isoformat()]["instrument_ids"]
+                    except Exception:
+                        pit_insts = None
 
-            active_inst_ids = db.execute(subq).scalars().all()
+                if pit_insts:
+                    active_inst_ids = list(pit_insts)
+                else:
+                    try:
+                        from signal_atlas.universe.service import PointInTimeUniverseService
+                        u_svc = PointInTimeUniverseService(db=db)
+                        u_snap = u_svc.get_universe(target_date, session=db)
+                        active_inst_ids = u_snap.get_eligible_instrument_ids()
+                    except Exception:
+                        min_daily_turnover = self.risk_config.min_adtv * Decimal("0.20")
+                        subq = (
+                            select(DailyPriceRaw.instrument_id)
+                            .where(
+                                DailyPriceRaw.trade_date == target_date,
+                                DailyPriceRaw.series == "EQ",
+                                DailyPriceRaw.traded_value >= min_daily_turnover,
+                            )
+                            .order_by(DailyPriceRaw.traded_value.desc())
+                            .limit(100)
+                        )
+                        active_inst_ids = db.execute(subq).scalars().all()
+
             approved_setups: List[Dict[str, Any]] = []
             screened_count = len(active_inst_ids)
 
@@ -292,6 +341,15 @@ class ResearchService:
                         (InstrumentSymbolHistory.valid_to == None) | (InstrumentSymbolHistory.valid_to >= target_date),
                     )
                 ).scalars().first()
+                if not sym_rec:
+                    sym_rec = db.execute(
+                        select(InstrumentSymbolHistory)
+                        .where(
+                            InstrumentSymbolHistory.instrument_id == inst_id,
+                            InstrumentSymbolHistory.valid_from <= target_date,
+                        )
+                        .order_by(InstrumentSymbolHistory.valid_from.desc())
+                    ).scalars().first()
                 symbol = sym_rec.symbol if sym_rec else inst_id
 
                 history = get_point_in_time_adjusted_history(inst_id, target_date, db=db)
@@ -323,10 +381,20 @@ class ResearchService:
                 )
 
                 if setup.is_approved:
-                    approved_setups.append(setup.model_dump(mode="json"))
+                    s_dict = setup.model_dump(mode="json")
+                    s_dict["_adtv"] = float(adtv)
+                    s_dict["_rsi_dist"] = abs(float(features.rsi_14 or Decimal("50.00")) - 50.0)
+                    approved_setups.append(s_dict)
 
-            # Rank by reward-to-risk descending
-            approved_setups.sort(key=lambda s: float(s.get("reward_to_risk", 0)), reverse=True)
+            # Deterministic Ranking (Task 4 / Task 15):
+            # Primary = Trailing ADTV descending; Secondary = RSI distance from 50 ascending
+            approved_setups.sort(
+                key=lambda s: (
+                    -s.get("_adtv", 0.0),
+                    s.get("_rsi_dist", 50.0),
+                    s.get("symbol", ""),
+                )
+            )
             top_setups = approved_setups[:top_n]
 
             return {
@@ -373,6 +441,15 @@ class ResearchService:
                     (InstrumentSymbolHistory.valid_to == None) | (InstrumentSymbolHistory.valid_to >= target_date),
                 )
             ).scalars().first()
+            if not sym_rec:
+                sym_rec = db.execute(
+                    select(InstrumentSymbolHistory)
+                    .where(
+                        InstrumentSymbolHistory.symbol == symbol.upper(),
+                        InstrumentSymbolHistory.valid_from <= target_date,
+                    )
+                    .order_by(InstrumentSymbolHistory.valid_from.desc())
+                ).scalars().first()
 
             if not sym_rec:
                 # Query active symbols for suggestion (prioritize substring and prefix matches, then fuzzy)
@@ -430,8 +507,27 @@ class ResearchService:
                 history,
             )
 
-            # Market context
+            # Market context for setup
             mkt_status = self.get_market_status(target_date, session=db)
+            if as_of_date is None and mkt_status.get("data_status") == "STALE":
+                stale_warnings = list(mkt_status.get("warnings", []))
+                stale_warnings.append(
+                    "STALENESS GUARD: Live setup blocked because database prices are stale. "
+                    "Ingest latest trading sessions or specify an explicit historical --date."
+                )
+                return {
+                    "as_of": str(target_date),
+                    "data_status": "STALE",
+                    "warnings": stale_warnings,
+                    "result": {
+                        "symbol": symbol.upper(),
+                        "instrument_id": inst_id,
+                        "is_approved": False,
+                        "signal_state": "AVOID",
+                        "primary_rejection_reason": "STALENESS GUARD: Live trade setup blocked because database prices are stale.",
+                    },
+                }
+
             is_bullish = True if ignore_regime else mkt_status["result"]["is_bullish"]
             mkt_ctx = MarketContext(
                 as_of_date=target_date,
@@ -467,7 +563,7 @@ class ResearchService:
 
             return {
                 "as_of": str(target_date),
-                "data_status": "FRESH",
+                "data_status": mkt_status.get("data_status", "FRESH"),
                 "warnings": setup.warnings,
                 "result": setup.model_dump(mode="json"),
             }
@@ -492,6 +588,15 @@ class ResearchService:
                     (InstrumentSymbolHistory.valid_to == None) | (InstrumentSymbolHistory.valid_to >= target_date),
                 )
             ).scalars().first()
+            if not sym_rec:
+                sym_rec = db.execute(
+                    select(InstrumentSymbolHistory)
+                    .where(
+                        InstrumentSymbolHistory.symbol == symbol.upper(),
+                        InstrumentSymbolHistory.valid_from <= target_date,
+                    )
+                    .order_by(InstrumentSymbolHistory.valid_from.desc())
+                ).scalars().first()
 
             warnings: List[str] = []
             flags: List[Dict[str, Any]] = []

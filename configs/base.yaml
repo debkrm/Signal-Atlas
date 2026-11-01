@@ -1,0 +1,49 @@
+# Signal Atlas: Frozen Baseline Strategy Configuration (v1.0)
+# Strategy: trend_pullback
+# Pre-registered per backtest_and_tuning_plan.md
+
+strategy_id: "trend_pullback"
+strategy_version: "v1.0"
+
+# Technical parameters (current live defaults)
+parameters:
+  ema_fast: 20
+  ema_slow: 50
+  weekly_ema: 10
+  pullback_proximity_pct: 0.04    # within 4% of EMA20
+  rsi_period: 14
+  rsi_min: 40.0
+  rsi_max: 60.0
+  min_reward_to_risk: 1.50
+  target_r_multiple: 2.00
+  stop_type: "SWING_LOW"          # Structural swing low, backed by ATR minimum
+  atr_period: 14
+  atr_multiplier: 2.00
+
+# Market regime gate
+regime:
+  benchmark_symbol: "NIFTYBEES"
+  benchmark_ema: 50
+  gate_enabled: true
+
+# Portfolio & Execution Rules (frozen per live risk policy)
+portfolio:
+  starting_capital: 1000000.00
+  risk_per_trade_pct: 0.01        # 1% equity risk per trade
+  max_concurrent_positions: 10
+  max_total_open_risk_pct: 0.06   # 6% portfolio open risk cap
+  drawdown_killswitch_pct: 10.0   # 10% peak-to-trough equity kill-switch
+  max_daily_turnover_pct: 0.02    # max 2% ADTV participation cap
+
+# Cost Model (Zerodha/Groww Indian Cash Delivery)
+costs:
+  brokerage_per_order: 0.00       # Zero delivery brokerage on discount brokers
+  stt_delivery_buy_pct: 0.001     # 0.1% on buy
+  stt_delivery_sell_pct: 0.001    # 0.1% on sell
+  exchange_txn_fee_pct: 0.0000297 # NSE 0.00297%
+  sebi_turnover_fee_pct: 0.000001 # SEBI Rs 10 per crore
+  stamp_duty_buy_pct: 0.00015     # 0.015% on buy
+  dp_charge_per_scrip: 15.93      # Rs 13.50 + 18% GST per sell scrip
+  gst_pct: 0.18                   # 18% on exchange fee, brokerage, and SEBI fee
+  base_slippage_bps: 10           # 10 bps slippage per side (base case)
+  stress_slippage_bps: 25         # 25 bps slippage per side (stress case)

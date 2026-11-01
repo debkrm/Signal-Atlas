@@ -36,8 +36,12 @@ class TrendPullbackStrategy(Strategy):
     Pure deterministic Trend-Pullback Swing Strategy.
     """
 
-    def __init__(self, parameters: Optional[TrendPullbackParameters] = None):
-        self.params = parameters or TrendPullbackParameters()
+    def __init__(
+        self,
+        parameters: Optional[TrendPullbackParameters] = None,
+        params: Optional[TrendPullbackParameters] = None,
+    ):
+        self.params = parameters or params or TrendPullbackParameters()
 
     @property
     def strategy_id(self) -> str:
@@ -70,8 +74,11 @@ class TrendPullbackStrategy(Strategy):
 
         if atr is not None and atr > Decimal("0") and c > Decimal("0"):
             stop_price = round_to_tick(c - (atr * self.params.stop_atr_multiplier))
-            target_price = round_to_tick(c + (atr * self.params.target_atr_multiplier))
             risk_per_share = entry_ref - stop_price
+            if self.params.target_r_multiple is not None and risk_per_share > Decimal("0"):
+                target_price = round_to_tick(c + (self.params.target_r_multiple * risk_per_share))
+            else:
+                target_price = round_to_tick(c + (atr * self.params.target_atr_multiplier))
             reward_per_share = target_price - entry_ref
             reward_to_risk = (
                 (reward_per_share / risk_per_share).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -332,6 +339,7 @@ class TrendPullbackStrategy(Strategy):
             reward_to_risk=reward_to_risk,
             atr_14=atr,
             rsi_14=features.rsi_14,
+            adtv=universe_member.average_daily_turnover if universe_member else None,
             features_summary={
                 "ema_20": str(features.ema_20),
                 "ema_50": str(features.ema_50),

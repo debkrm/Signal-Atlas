@@ -87,15 +87,15 @@ def evaluate_instrument_eligibility(
     if instrument_id in quarantined_instrument_ids:
         return False, EligibilityReason.EXCLUDED_QUARANTINED, "Instrument is quarantined due to unresolved corporate actions or data anomalies"
 
-    # 3. Security classification: Common Equity vs ETF/Mutual Fund
+    # 3. Rights Entitlement check
+    if is_rights_entitlement(symbol, isin, series):
+        return False, EligibilityReason.EXCLUDED_RIGHTS_ENTITLEMENT, f"Rights entitlement instrument: symbol={symbol}, isin={isin}, series={series}"
+
+    # 4. Security classification: Common Equity vs ETF/Mutual Fund
     if not is_common_equity_isin(isin):
         if isin and isin.startswith("INF"):
             return False, EligibilityReason.EXCLUDED_ETF_MUTUAL_FUND, f"Excluded ETF/Mutual Fund scheme ISIN: {isin}"
         return False, EligibilityReason.EXCLUDED_NON_EQUITY_SERIES, f"Non-equity ISIN prefix: {isin}"
-
-    # 4. Rights Entitlement check
-    if is_rights_entitlement(symbol, isin, series):
-        return False, EligibilityReason.EXCLUDED_RIGHTS_ENTITLEMENT, f"Rights entitlement instrument: symbol={symbol}, isin={isin}, series={series}"
 
     # 5. Permitted trading series
     if not is_permitted_trading_series(series, config.permitted_series, config.include_sme):
