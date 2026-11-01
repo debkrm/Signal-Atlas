@@ -262,3 +262,32 @@ def test_evaluate_universe_ranking():
     # Third must be AVOID
     assert candidates[2].signal_state == SignalState.AVOID
     assert candidates[2].symbol == "STOCK_C"
+
+
+def test_rejection_preserves_technical_geometry():
+    """
+    Verifies that when a setup is rejected (e.g. bearish market regime or technical filter),
+    authentic ATR-based stop loss and profit targets are preserved rather than collapsing to close price.
+    """
+    strategy = TrendPullbackStrategy()
+    context = MarketContext(as_of_date=datetime.date(2024, 6, 14), is_market_regime_bullish=False)
+    features = create_sample_features(
+        close=Decimal("100.00"),
+        atr_14=Decimal("4.00"),
+    )
+
+    candidate = strategy.evaluate_candidate(features, context)
+
+    # Signal state is AVOID because macro regime is bearish
+    assert candidate.signal_state == SignalState.AVOID
+    assert candidate.is_valid is False
+    assert candidate.rejection_reason == "MARKET_REGIME_BEARISH"
+
+    # Crucial architectural assertion: Geometry does NOT collapse to entry price!
+    assert candidate.entry_reference == Decimal("100.00")
+    assert candidate.stop_loss == Decimal("94.00")  # 100 - (4 * 1.5)
+    assert candidate.target_price == Decimal("112.00")  # 100 + (4 * 3.0)
+    assert candidate.risk_per_share == Decimal("6.00")
+    assert candidate.reward_per_share == Decimal("12.00")
+    assert candidate.reward_to_risk == Decimal("2.00")
+

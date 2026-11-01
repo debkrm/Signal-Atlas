@@ -162,6 +162,7 @@ class TradeSetup(BaseModel):
     # Auditing & Explanations
     passed_checks: List[str] = Field(default_factory=list)
     failed_checks: List[RiskCheckResult] = Field(default_factory=list)
+    condition_evaluations: List[Dict[str, Any]] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
     primary_rejection_reason: Optional[str] = None
     provenance: Dict[str, Any] = Field(default_factory=dict)
